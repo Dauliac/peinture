@@ -160,13 +160,12 @@ pub struct Palette {
 impl Default for Palette {
     fn default() -> Self {
         Self {
-            // Bright RGB colors for visibility (not dark ANSI named)
-            success: Color::Rgb(80, 220, 130),     // bright green
-            error: Color::Rgb(240, 80, 80),        // bright red
-            warning: Color::Rgb(240, 180, 50),     // orange-yellow
-            info: Color::Rgb(80, 180, 240),        // bright blue
-            muted: Color::Rgb(100, 100, 100),      // medium gray (for fade target)
-            primary: Color::Rgb(80, 180, 240),
+            success: Color::Named(NamedColor::Green),
+            error: Color::Named(NamedColor::Red),
+            warning: Color::Named(NamedColor::Yellow),
+            info: Color::Named(NamedColor::Cyan),
+            muted: Color::Rgb(90, 90, 90),        // RGB gray so fade lerp works smoothly
+            primary: Color::Named(NamedColor::Cyan),
             secondary: Color::Named(NamedColor::White),
 
             // Pastel rainbow: pink, peach, cream, mint, sky, lavender
