@@ -82,8 +82,8 @@ impl Pulse {
         }
         let elapsed_ms = self.start.elapsed().as_millis() as u32;
         let phase = (elapsed_ms % tokens.pulse_cycle_ms) as f32 / tokens.pulse_cycle_ms as f32;
-        // Rest phases: 0.88–1.00 and the brief rest at 0.42–0.46
-        phase >= 0.88 || (phase >= 0.42 && phase < 0.46)
+        // Rest phase: 0.50–1.00
+        phase >= 0.50
     }
 
     /// Milliseconds until the next rest phase.
@@ -96,12 +96,11 @@ impl Pulse {
         let elapsed_ms = self.start.elapsed().as_millis() as u32;
         let phase = (elapsed_ms % tokens.pulse_cycle_ms) as f32 / tokens.pulse_cycle_ms as f32;
 
-        if phase >= 0.88 || (phase >= 0.42 && phase < 0.46) {
+        if phase >= 0.50 {
             return 0;
         }
 
-        // Next rest point
-        let target = if phase < 0.42 { 0.42 } else { 0.88 };
+        let target = 0.50;
         let remaining_phase = target - phase;
         (remaining_phase * tokens.pulse_cycle_ms as f32) as u64
     }
@@ -123,40 +122,28 @@ impl Default for Pulse {
     }
 }
 
-/// Heartbeat easing curve.
+/// Heartbeat easing curve — expand-only.
 ///
-/// Returns continuous displacement from -1.0 to +1.0 (0.0 = home).
+/// Returns displacement from 0.0 (home/minimum) to +1.0 (largest).
+/// No contraction below home since ▐▌ is the minimum bar.
 ///
-/// Timing budget (2400ms cycle, 12fps = ~28 frames):
-///   0.00–0.22  expand    home→max       ~6 frames  (ease-out-quad)
-///   0.22–0.42  return    max→home       ~6 frames  (ease-in-quad)
-///   0.42–0.46  rest      home           ~1 frame
-///   0.46–0.68  contract  home→min       ~6 frames  (ease-out-quad, full range)
-///   0.68–0.88  release   min→home       ~6 frames  (ease-in-quad)
-///   0.88–1.00  rest      home           ~3 frames
+/// Timing budget (3200ms cycle, 12fps = ~38 frames):
+///   0.00–0.25  expand    home→max       ~10 frames  (ease-out-quad)
+///   0.25–0.50  return    max→home       ~10 frames  (ease-in-quad)
+///   0.50–1.00  rest      home           ~18 frames
+///
+/// The long rest gives the heartbeat a calm, organic rhythm.
 fn heartbeat(phase: f32) -> f32 {
     match phase {
-        // Expand: home → max
-        p if p < 0.22 => {
-            let t = p / 0.22;
+        // Expand: home → max (snappy attack)
+        p if p < 0.25 => {
+            let t = p / 0.25;
             ease_out_quad(t)
         }
-        // Return: max → home
-        p if p < 0.42 => {
-            let t = (p - 0.22) / 0.20;
+        // Return: max → home (gradual release)
+        p if p < 0.50 => {
+            let t = (p - 0.25) / 0.25;
             1.0 - ease_in_quad(t)
-        }
-        // Brief rest at home
-        p if p < 0.46 => 0.0,
-        // Contract: home → min (full -1.0 range, same time as expand)
-        p if p < 0.68 => {
-            let t = (p - 0.46) / 0.22;
-            -ease_out_quad(t)
-        }
-        // Release: min → home
-        p if p < 0.88 => {
-            let t = (p - 0.68) / 0.20;
-            -(1.0 - ease_in_quad(t))
         }
         // Rest at home
         _ => 0.0,
@@ -201,40 +188,37 @@ mod tests {
 
     #[test]
     fn heartbeat_reaches_peak() {
-        // Should be near 1.0 around phase 0.20-0.28
-        assert!(heartbeat(0.25) > 0.8);
+        assert!(heartbeat(0.20) > 0.8);
     }
 
     #[test]
-    fn heartbeat_returns_to_home() {
-        // Should be near 0 at rest phase 0.42-0.46
-        assert!(heartbeat(0.44).abs() < 0.05);
-    }
-
-    #[test]
-    fn heartbeat_contracts() {
-        // Should go negative around 0.65-0.72
-        assert!(heartbeat(0.68) < -0.4);
+    fn heartbeat_never_negative() {
+        // Expand-only: displacement is always >= 0
+        for i in 0..100 {
+            let phase = i as f32 / 100.0;
+            assert!(heartbeat(phase) >= -0.01, "phase {phase} was {}", heartbeat(phase));
+        }
     }
 
     #[test]
     fn heartbeat_rests_at_end() {
+        assert!(heartbeat(0.60).abs() < 0.01);
         assert!(heartbeat(0.95).abs() < 0.01);
     }
 
     #[test]
     fn all_frames_visited_during_expand() {
-        // Simulate 28 frames at 12fps over one 2400ms cycle
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let theme = Theme::default();
-        for i in 0..29 {
-            let phase = i as f32 / 28.0;
+        // 38 frames per cycle at 12fps / 3200ms
+        for i in 0..39 {
+            let phase = i as f32 / 38.0;
             let d = heartbeat(phase);
             let frame = theme.beacon.frame_for_displacement(d);
             visited.insert(frame.to_string());
         }
-        // Should visit at least 5 of the 7 frames (home + some expand + some contract)
-        assert!(visited.len() >= 5, "Only visited {} frames: {:?}", visited.len(), visited);
+        // Should visit all 4 frames
+        assert_eq!(visited.len(), 4, "Only visited {} frames: {:?}", visited.len(), visited);
     }
 
     #[test]

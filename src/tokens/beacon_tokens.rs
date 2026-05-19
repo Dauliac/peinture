@@ -24,17 +24,15 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 12,
             pulse_cycle_ms: 3200,
-            // 7 centered stages — capped at ▐▉ (no full blocks)
+            // 4 stages — ▐▌ is minimum/home (matches tree connector width)
+            // Pulse only expands upward, never contracts below home
             bar_frames: vec![
-                "\u{2595}\u{258F}".into(),  // ▕▏  0  thinnest
-                "\u{2595}\u{258E}".into(),  // ▕▎  1
-                "\u{2595}\u{258D}".into(),  // ▕▍  2
-                "\u{2590}\u{258C}".into(),  // ▐▌  3  HOME
-                "\u{2590}\u{258B}".into(),  // ▐▋  4
-                "\u{2590}\u{258A}".into(),  // ▐▊  5
-                "\u{2590}\u{2589}".into(),  // ▐▉  6  largest
+                "\u{2590}\u{258C}".into(),  // ▐▌  0  HOME (minimum)
+                "\u{2590}\u{258B}".into(),  // ▐▋  1
+                "\u{2590}\u{258A}".into(),  // ▐▊  2
+                "\u{2590}\u{2589}".into(),  // ▐▉  3  largest
             ],
-            bar_home_idx: 3,
+            bar_home_idx: 0,
         }
     }
 }
@@ -97,8 +95,9 @@ mod tests {
     }
 
     #[test]
-    fn displacement_min_is_smallest() {
+    fn displacement_min_is_home() {
+        // No contraction below home — negative displacement clamps to home
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(-1.0), "\u{2595}\u{258F}"); // ▕▏
+        assert_eq!(t.frame_for_displacement(-1.0), t.home_frame());
     }
 }
