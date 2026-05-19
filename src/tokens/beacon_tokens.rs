@@ -23,7 +23,7 @@ impl Default for BeaconTokens {
         Self {
             max_items: 5,
             fps: 12,
-            pulse_cycle_ms: 3200,
+            pulse_cycle_ms: 2200,
             // 5 stages — left column is always █ (matches ├ width)
             // Pulse expands RIGHT into the second column
             // Left edge perfectly aligned with tree connectors
