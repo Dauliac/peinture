@@ -1,0 +1,46 @@
+[package]
+name = "peinture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Terminal UI component library with design tokens, layered rendering, and nom-style pinned regions"
+license = "MIT"
+repository = "https://github.com/Dauliac/peinture"
+
+[dependencies]
+console = "0.15"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+insta = "1"
+proptest = "1"
+
+[[example]]
+name = "beacon_demo"
+path = "examples/beacon_demo.rs"
+
+[[example]]
+name = "rainbow_demo"
+path = "examples/rainbow_demo.rs"
+
+[[example]]
+name = "resize_demo"
+path = "examples/resize_demo.rs"
+
+[[example]]
+name = "stream_demo"
+path = "examples/stream_demo.rs"
+
+[[example]]
+name = "layout_demo"
+path = "examples/layout_demo.rs"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+print_stdout = "warn"
+print_stderr = "warn"
+unwrap_used = "warn"
+dbg_macro = "deny"
