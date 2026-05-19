@@ -68,13 +68,22 @@ fn main() {
         thread::sleep(Duration::from_millis(300));
     }
 
-    // Completion
+    // Completion — update state, let pulse finish its beat
     state.phase = Some("Done".into());
-    state.is_active = false;
     state.items[0].status = StatusIcon::Success;
     state.items[0].message = "myservice:rust".into();
     state.items[0].metadata = Some("14.4s".into());
 
+    loop {
+        let frame = beacon::render_live(&state, &pulse, &theme);
+        painter.render_frame(&frame.lines);
+        thread::sleep(Duration::from_millis(theme.beacon.frame_interval_ms()));
+        if pulse.is_at_rest(&theme) {
+            break;
+        }
+    }
+
+    state.is_active = false;
     let frame = beacon::render_static(&state, &theme);
     painter.print_final(&frame.lines);
     println!();

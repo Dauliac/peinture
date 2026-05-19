@@ -101,11 +101,10 @@ fn main() {
         }
     }
 
-    // Phase 3: Done
+    // Phase 3: Done — update state but keep pulse running
     state.phase = Some("Done".into());
     state.progress = Some("3 built, 1 cached".into());
     state.elapsed = Some("6.3s".into());
-    state.is_active = false;
     state.items.push(BeaconItem {
         status: StatusIcon::Success,
         message: "cli-tools:rust".into(),
@@ -114,7 +113,19 @@ fn main() {
         priority: 8,
     });
 
-    // Final static frame (no pulse)
+    // Let the pulse finish its current beat before releasing
+    // Keep rendering until the pulse reaches a rest phase
+    loop {
+        let frame = beacon::render_live(&state, &pulse, &theme);
+        painter.render_frame(&frame.lines);
+        thread::sleep(Duration::from_millis(theme.beacon.frame_interval_ms()));
+        if pulse.is_at_rest(&theme) {
+            break;
+        }
+    }
+
+    // Now stop the pulse and print final static beacon
+    state.is_active = false;
     let frame = beacon::render_static(&state, &theme);
     painter.print_final(&frame.lines);
 

@@ -73,6 +73,39 @@ impl Pulse {
         format!("{}{}\x1b[0m", frame.color.fg_code(), frame.bar)
     }
 
+    /// Whether the pulse is currently at the home/rest position.
+    /// Use this to know when it's safe to stop the animation cleanly.
+    pub fn is_at_rest(&self, theme: &Theme) -> bool {
+        let tokens = &theme.beacon;
+        if tokens.pulse_cycle_ms == 0 {
+            return true;
+        }
+        let elapsed_ms = self.start.elapsed().as_millis() as u32;
+        let phase = (elapsed_ms % tokens.pulse_cycle_ms) as f32 / tokens.pulse_cycle_ms as f32;
+        // Rest phases: 0.88–1.00 and the brief rest at 0.52–0.56
+        phase >= 0.88 || (phase >= 0.52 && phase < 0.56)
+    }
+
+    /// Milliseconds until the next rest phase.
+    /// Returns 0 if already at rest.
+    pub fn ms_until_rest(&self, theme: &Theme) -> u64 {
+        let tokens = &theme.beacon;
+        if tokens.pulse_cycle_ms == 0 {
+            return 0;
+        }
+        let elapsed_ms = self.start.elapsed().as_millis() as u32;
+        let phase = (elapsed_ms % tokens.pulse_cycle_ms) as f32 / tokens.pulse_cycle_ms as f32;
+
+        if phase >= 0.88 || (phase >= 0.52 && phase < 0.56) {
+            return 0;
+        }
+
+        // Next rest is at 0.88 (end-of-cycle rest)
+        let target = if phase < 0.52 { 0.52 } else { 0.88 };
+        let remaining_phase = target - phase;
+        (remaining_phase * tokens.pulse_cycle_ms as f32) as u64
+    }
+
     /// Render a static bar with a specific color.
     pub fn render_static(bar: &str, color: &Color) -> String {
         format!("{}{}\x1b[0m", color.fg_code(), bar)
