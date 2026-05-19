@@ -19,7 +19,7 @@ pub mod text;
 pub mod tree;
 
 pub use bar::Bar;
-pub use beacon::{Beacon, BeaconItem, BeaconState, Severity};
+pub use beacon::{Beacon, BeaconItem, BeaconState, Orientation, Severity};
 pub use frame::Frame;
 pub use text::Text;
 pub use tree::{Tree, TreeItem};

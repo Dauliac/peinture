@@ -64,6 +64,11 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Create a tree with the given root direction.
+    pub fn new(root: TreeRoot) -> Self {
+        Self { items: Vec::new(), root, max_items: None }
+    }
+
     /// Top-rooted tree (traditional: root at top, last item gets └─).
     pub fn top_rooted() -> Self {
         Self { items: Vec::new(), root: TreeRoot::Top, max_items: None }
