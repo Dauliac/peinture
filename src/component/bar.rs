@@ -130,15 +130,49 @@ impl Animate for Bar {
         }
         let elapsed_ms = self.start.elapsed().as_millis() as u32;
         let phase = (elapsed_ms % self.cycle_ms) as f32 / self.cycle_ms as f32;
-        phase >= 0.50
+        // Rest phases: brief mid-rest (0.42–0.46) and end rest (0.88–1.00)
+        phase >= 0.88 || (phase >= 0.42 && phase < 0.46)
     }
 }
 
-/// Heartbeat easing — expand-only, single bump with rest.
+/// Heartbeat easing — dual bump (expand right + contract left).
+///
+/// Returns displacement from -1.0 (contract) to +1.0 (expand). 0.0 = home.
+///
+/// ```text
+///  +1.0  ┃      ╭╮
+///        ┃     ╱  ╲
+///   0.0  ┃───╱──────╲──────────╱────────
+///        ┃                    ╱
+///  -1.0  ┃              ╰──╯
+///        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+///        0%       22%    46%   68%   100%
+/// ```
 fn heartbeat(phase: f32) -> f32 {
     match phase {
-        p if p < 0.25 => ease_out_quad(p / 0.25),
-        p if p < 0.50 => 1.0 - ease_in_quad((p - 0.25) / 0.25),
+        // Expand: home → max (grow right)
+        p if p < 0.22 => {
+            let t = p / 0.22;
+            ease_out_quad(t)
+        }
+        // Return: max → home
+        p if p < 0.42 => {
+            let t = (p - 0.22) / 0.20;
+            1.0 - ease_in_quad(t)
+        }
+        // Brief rest at home
+        p if p < 0.46 => 0.0,
+        // Contract: home → min (shrink right)
+        p if p < 0.68 => {
+            let t = (p - 0.46) / 0.22;
+            -ease_out_quad(t)
+        }
+        // Release: min → home
+        p if p < 0.88 => {
+            let t = (p - 0.68) / 0.20;
+            -(1.0 - ease_in_quad(t))
+        }
+        // Rest at home
         _ => 0.0,
     }
 }
@@ -179,15 +213,9 @@ mod tests {
     #[test]
     fn heartbeat_bounds() {
         assert!(heartbeat(0.0).abs() < 0.01);
-        assert!(heartbeat(0.20) > 0.8);
-        assert!(heartbeat(0.60).abs() < 0.01);
-        assert!(heartbeat(0.95).abs() < 0.01);
-    }
-
-    #[test]
-    fn heartbeat_never_negative() {
-        for i in 0..100 {
-            assert!(heartbeat(i as f32 / 100.0) >= -0.01);
-        }
+        assert!(heartbeat(0.18) > 0.8);       // expand peak
+        assert!(heartbeat(0.44).abs() < 0.05); // mid rest
+        assert!(heartbeat(0.64) < -0.5);       // contract dip
+        assert!(heartbeat(0.95).abs() < 0.01); // end rest
     }
 }

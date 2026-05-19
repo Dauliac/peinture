@@ -24,14 +24,18 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 12,
             pulse_cycle_ms: 3200,
-            // 3 stages — right-aligned, pulse expands to the LEFT
-            // Right edge stays fixed, growth fills leftward
+            // 7 stages — left-aligned, left edge fixed with tree ├
+            // Pulse expands RIGHT from home, contracts LEFT from home
             bar_frames: vec![
-                "\u{2595}".into(),  // ▕  0  HOME (right 1/8, thin)
-                "\u{2590}".into(),  // ▐  1  (right 1/2)
-                "\u{2588}".into(),  // █  2  PEAK (full block)
+                "\u{258F}".into(),  // ▏  0  smallest (contract peak)
+                "\u{258E}".into(),  // ▎  1
+                "\u{258D}".into(),  // ▍  2
+                "\u{258C}".into(),  // ▌  3  HOME (mid)
+                "\u{258B}".into(),  // ▋  4
+                "\u{258A}".into(),  // ▊  5
+                "\u{2589}".into(),  // ▉  6  largest (expand peak)
             ],
-            bar_home_idx: 0,
+            bar_home_idx: 3,
         }
     }
 }
@@ -76,9 +80,9 @@ mod tests {
     }
 
     #[test]
-    fn home_frame_is_right_eighth() {
+    fn home_frame_is_left_half() {
         let t = BeaconTokens::default();
-        assert_eq!(t.home_frame(), "\u{2595}"); // ▕
+        assert_eq!(t.home_frame(), "\u{258C}"); // ▌
     }
 
     #[test]
@@ -88,15 +92,14 @@ mod tests {
     }
 
     #[test]
-    fn displacement_max_is_full_block() {
+    fn displacement_max_is_largest() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}"); // █
+        assert_eq!(t.frame_for_displacement(1.0), "\u{2589}"); // ▉
     }
 
     #[test]
-    fn displacement_min_is_home() {
-        // No contraction below home — negative displacement clamps to home
+    fn displacement_min_is_smallest() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(-1.0), t.home_frame());
+        assert_eq!(t.frame_for_displacement(-1.0), "\u{258F}"); // ▏
     }
 }

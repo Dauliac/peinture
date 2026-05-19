@@ -160,12 +160,12 @@ pub struct Palette {
 impl Default for Palette {
     fn default() -> Self {
         Self {
-            success: Color::Rgb(120, 220, 160),   // pastel green
-            error: Color::Rgb(240, 100, 100),      // soft red
-            warning: Color::Rgb(240, 200, 80),     // warm yellow
-            info: Color::Rgb(100, 180, 230),        // soft blue
+            success: Color::Named(NamedColor::Green),
+            error: Color::Named(NamedColor::Red),
+            warning: Color::Named(NamedColor::Yellow),
+            info: Color::Named(NamedColor::Cyan),
             muted: Color::Named(NamedColor::BrightBlack),
-            primary: Color::Rgb(100, 180, 230),     // soft blue
+            primary: Color::Named(NamedColor::Cyan),
             secondary: Color::Named(NamedColor::White),
 
             // Pastel rainbow: pink, peach, cream, mint, sky, lavender
@@ -182,9 +182,9 @@ impl Default for Palette {
             pulse_a: Color::Rgb(60, 100, 180),
             pulse_b: Color::Rgb(80, 220, 255),
 
-            bar_idle: Color::Rgb(120, 220, 160),     // pastel green
-            bar_error: Color::Rgb(240, 100, 100),    // soft red
-            bar_warning: Color::Rgb(240, 200, 80),   // warm yellow
+            bar_idle: Color::Rgb(130, 210, 160),     // pastel mint green (softer than ANSI)
+            bar_error: Color::Named(NamedColor::Red),
+            bar_warning: Color::Named(NamedColor::Yellow),
         }
     }
 }
