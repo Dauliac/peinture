@@ -4,9 +4,9 @@
 //! The beacon is pinned at the bottom while "build output" streams above.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
-use peinture::component::beacon::{BeaconProps, BeaconState, Severity, render_ci};
+use peinture::component::beacon::{self, BeaconState, Severity, render_ci};
 use peinture::component::pulse::Pulse;
-use peinture::component::{BeaconItem, Component, Beacon};
+use peinture::component::BeaconItem;
 use peinture::terminal::OutputContext;
 use peinture::terminal::painter::Painter;
 use peinture::tokens::Theme;
@@ -40,6 +40,9 @@ fn main() {
     let mut painter = Painter::new(ctx.term_width, ctx.term_height);
     painter.hide_cursor();
 
+    // Single pulse — lives for the entire animation
+    let pulse = Pulse::new();
+
     // Phase 1: Evaluating
     let mut state = BeaconState {
         brand: "cimera".into(),
@@ -56,24 +59,19 @@ fn main() {
         ..BeaconState::default()
     };
 
-    for i in 0..15 {
+    for i in 0..25 {
         // Simulate build output streaming above beacon
         if i % 3 == 0 && i > 0 {
             painter.stream_line(format!("  | Compiling dep-{} v0.1.0", i / 3));
         }
 
-        let frame = Beacon::render(
-            &BeaconProps {
-                state: state.clone(),
-                pulse: Some(Pulse::new()), // fresh for each frame to show pulse
-            },
-            &theme,
-        );
+        // Render with the SAME pulse instance — elapsed time accumulates
+        let frame = beacon::render_live(&state, &pulse, &theme);
         painter.render_frame(&frame.lines);
         thread::sleep(Duration::from_millis(theme.beacon.frame_interval_ms()));
 
         // Update state as time passes
-        if i == 5 {
+        if i == 8 {
             state.items[0].status = StatusIcon::Success;
             state.items[0].message = "evaluation completed".into();
             state.items[0].metadata = Some("2.1s".into());
@@ -87,7 +85,7 @@ fn main() {
                 priority: 9,
             });
         }
-        if i == 10 {
+        if i == 16 {
             state.items[1].status = StatusIcon::Success;
             state.items[1].message = "myservice:rust".into();
             state.items[1].metadata = Some("4.2s".into());
@@ -116,14 +114,8 @@ fn main() {
         priority: 8,
     });
 
-    // Final static frame
-    let frame = Beacon::render(
-        &BeaconProps {
-            state: state.clone(),
-            pulse: None,
-        },
-        &theme,
-    );
+    // Final static frame (no pulse)
+    let frame = beacon::render_static(&state, &theme);
     painter.print_final(&frame.lines);
 
     println!("\n=== Demo complete ===");

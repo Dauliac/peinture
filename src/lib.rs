@@ -50,7 +50,7 @@ pub mod terminal;
 pub mod tokens;
 
 // Re-exports for convenience
-pub use component::{Beacon, BeaconItem, BeaconState, Component, Frame};
+pub use component::{Beacon, BeaconItem, BeaconState, Frame};
 pub use renderer::Painter;
 pub use terminal::OutputContext;
 pub use tokens::Theme;

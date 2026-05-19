@@ -13,7 +13,7 @@
 use crate::component::pulse::Pulse;
 use crate::component::rainbow::Rainbow;
 use crate::component::tree::{Tree, TreeItem};
-use crate::component::{Component, Frame};
+use crate::component::Frame;
 use crate::tokens::icons::StatusIcon;
 use crate::tokens::Theme;
 
@@ -82,10 +82,9 @@ impl BeaconState {
 /// The beacon component.
 pub struct Beacon;
 
-impl Component for Beacon {
-    type Props = BeaconProps;
-
-    fn render(props: &Self::Props, theme: &Theme) -> Frame {
+impl Beacon {
+    /// Render the beacon into a frame.
+    pub fn render(props: &BeaconProps<'_>, theme: &Theme) -> Frame {
         let state = &props.state;
         let max_items = theme.beacon.max_items;
 
@@ -107,7 +106,7 @@ impl Component for Beacon {
         frame = frame.lines(tree_lines);
 
         // Brand line at the bottom — the pet anchors the beacon
-        let header = render_header(state, props.pulse.as_ref(), theme);
+        let header = render_header(state, props.pulse, theme);
         frame = frame.line(header);
 
         frame
@@ -115,13 +114,13 @@ impl Component for Beacon {
 }
 
 /// Props for the Beacon component.
-pub struct BeaconProps {
+pub struct BeaconProps<'a> {
     pub state: BeaconState,
     /// Pulse animation (None for static rendering).
-    pub pulse: Option<Pulse>,
+    pub pulse: Option<&'a Pulse>,
 }
 
-fn render_header(state: &BeaconState, pulse: Option<&Pulse>, theme: &Theme) -> String {
+fn render_header(state: &BeaconState, pulse: Option<&'_ Pulse>, theme: &Theme) -> String {
     let mut header = String::new();
 
     // Bar character: animated pulse when active, medium (home) when idle
@@ -200,6 +199,17 @@ pub fn render_static(state: &BeaconState, theme: &Theme) -> Frame {
         &BeaconProps {
             state: state.clone(),
             pulse: None,
+        },
+        theme,
+    )
+}
+
+/// Render the beacon with a live pulse.
+pub fn render_live(state: &BeaconState, pulse: &Pulse, theme: &Theme) -> Frame {
+    Beacon::render(
+        &BeaconProps {
+            state: state.clone(),
+            pulse: Some(pulse),
         },
         theme,
     )

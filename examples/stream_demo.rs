@@ -4,8 +4,8 @@
 //! build output scrolling up, beacon fixed at bottom.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
-use peinture::component::beacon::{BeaconProps, BeaconState, Severity};
-use peinture::component::{Beacon, BeaconItem, Component};
+use peinture::component::beacon::{self, BeaconState, Severity};
+use peinture::component::BeaconItem;
 use peinture::terminal::OutputContext;
 use peinture::terminal::painter::Painter;
 use peinture::tokens::Theme;
@@ -30,6 +30,9 @@ fn main() {
         "clap", "thiserror", "anyhow", "uuid", "chrono", "regex",
         "rand", "base64", "flate2", "rusqlite", "console", "glob",
     ];
+
+    // Single pulse for the whole animation
+    let pulse = peinture::component::pulse::Pulse::new();
 
     let mut state = BeaconState {
         brand: "cimera".into(),
@@ -59,13 +62,7 @@ fn main() {
         // Update beacon elapsed
         state.elapsed = Some(format!("{:.1}s", i as f32 * 0.8));
 
-        let frame = Beacon::render(
-            &BeaconProps {
-                state: state.clone(),
-                pulse: Some(peinture::component::pulse::Pulse::new()),
-            },
-            &theme,
-        );
+        let frame = beacon::render_live(&state, &pulse, &theme);
         painter.render_frame(&frame.lines);
 
         thread::sleep(Duration::from_millis(300));
@@ -78,13 +75,7 @@ fn main() {
     state.items[0].message = "myservice:rust".into();
     state.items[0].metadata = Some("14.4s".into());
 
-    let frame = Beacon::render(
-        &BeaconProps {
-            state: state.clone(),
-            pulse: None,
-        },
-        &theme,
-    );
+    let frame = beacon::render_static(&state, &theme);
     painter.print_final(&frame.lines);
     println!();
 }
