@@ -102,7 +102,7 @@ impl Beacon {
             })
             .collect();
 
-        let tree_lines = Tree::render(&tree_items, theme);
+        let tree_lines = Tree::render_bottom_rooted(&tree_items, theme);
         frame = frame.lines(tree_lines);
 
         // Brand line at the bottom — the pet anchors the beacon

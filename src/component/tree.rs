@@ -19,14 +19,33 @@ pub struct TreeItem {
 pub struct Tree;
 
 impl Tree {
-    /// Render items as a tree with colored connectors and status icons.
+    /// Render items as a top-rooted tree (last item gets └─).
     pub fn render(items: &[TreeItem], theme: &Theme) -> Vec<String> {
+        Self::render_inner(items, theme, false)
+    }
+
+    /// Render items as a bottom-rooted tree (first item gets ┌─, root is below).
+    /// Used by the beacon where the brand line is the root at the bottom.
+    pub fn render_bottom_rooted(items: &[TreeItem], theme: &Theme) -> Vec<String> {
+        Self::render_inner(items, theme, true)
+    }
+
+    fn render_inner(items: &[TreeItem], theme: &Theme, bottom_rooted: bool) -> Vec<String> {
         let mut lines = Vec::new();
         let last_idx = items.len().saturating_sub(1);
 
         for (i, item) in items.iter().enumerate() {
-            let is_last = i == last_idx;
-            let connector = theme.tree.connector(is_last);
+            let connector = if bottom_rooted {
+                theme.tree.connector_bottom_rooted(i == 0)
+            } else {
+                theme.tree.connector(i == last_idx)
+            };
+
+            let continuation = if bottom_rooted {
+                theme.tree.continuation_bottom_rooted(i == 0)
+            } else {
+                theme.tree.continuation(i == last_idx)
+            };
 
             // Status icon with color
             let icon = theme.icons.for_status(item.status);
@@ -35,7 +54,6 @@ impl Tree {
 
             // Build main line
             let main = if let Some(ref meta) = item.metadata {
-                // Right-align metadata at metadata_column
                 let prefix = format!(
                     "{dim}{connector}{reset} {icon_fg}{icon}{reset} {msg_fg}{msg}{reset}",
                     dim = Theme::dim(),
@@ -71,9 +89,8 @@ impl Tree {
 
             // Detail line (indented under continuation)
             if let Some(ref detail) = item.detail {
-                let cont = theme.tree.continuation(is_last);
                 lines.push(format!(
-                    "{dim}{cont}{reset}    {dim}{detail}{reset}",
+                    "{dim}{continuation}{reset}    {dim}{detail}{reset}",
                     dim = Theme::dim(),
                     reset = Theme::reset(),
                 ));

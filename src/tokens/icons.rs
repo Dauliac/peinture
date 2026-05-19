@@ -76,18 +76,25 @@ impl IconSet {
 /// Tree-drawing characters.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TreeChars {
+    /// Branch connector (middle items): ├─
     pub branch: String,
+    /// Last item (bottom of top-rooted tree): └─
     pub last: String,
+    /// First item (top of bottom-rooted tree): ┌─
+    pub first: String,
+    /// Vertical continuation: │
     pub vertical: String,
+    /// Blank continuation (under last/first item):
     pub blank: String,
 }
 
 impl Default for TreeChars {
     fn default() -> Self {
         Self {
-            branch: "\u{251C}\u{2500}".into(),   // |-
-            last: "\u{2514}\u{2500}".into(),      // '-
-            vertical: "\u{2502}".into(),           // |
+            branch: "\u{251C}\u{2500}".into(),   // ├─
+            last: "\u{2514}\u{2500}".into(),      // └─
+            first: "\u{250C}\u{2500}".into(),     // ┌─
+            vertical: "\u{2502}".into(),           // │
             blank: " ".into(),
         }
     }
@@ -99,19 +106,31 @@ impl TreeChars {
         Self {
             branch: "|-".into(),
             last: "`-".into(),
+            first: ",-".into(),
             vertical: "|".into(),
             blank: " ".into(),
         }
     }
 
-    /// Connector for a tree item.
+    /// Connector for a top-rooted tree (last item at bottom).
     pub fn connector(&self, is_last: bool) -> &str {
         if is_last { &self.last } else { &self.branch }
     }
 
-    /// Continuation line prefix.
+    /// Connector for a bottom-rooted tree (first item at top, root at bottom).
+    /// First item gets ┌─, rest get ├─.
+    pub fn connector_bottom_rooted(&self, is_first: bool) -> &str {
+        if is_first { &self.first } else { &self.branch }
+    }
+
+    /// Continuation line prefix for a top-rooted tree.
     pub fn continuation(&self, is_last: bool) -> &str {
         if is_last { &self.blank } else { &self.vertical }
+    }
+
+    /// Continuation line prefix for a bottom-rooted tree.
+    pub fn continuation_bottom_rooted(&self, is_first: bool) -> &str {
+        if is_first { &self.blank } else { &self.vertical }
     }
 }
 
