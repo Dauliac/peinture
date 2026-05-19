@@ -24,13 +24,15 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 12,
             pulse_cycle_ms: 3200,
-            // 4 stages — ▐▌ is minimum/home (matches tree connector width)
-            // Pulse only expands upward, never contracts below home
+            // 7 stages — ▐▌ is minimum/home, expands up to ██
             bar_frames: vec![
-                "\u{2590}\u{258C}".into(),  // ▐▌  0  HOME (minimum)
+                "\u{2590}\u{258C}".into(),  // ▐▌  0  HOME (minimum, matches tree)
                 "\u{2590}\u{258B}".into(),  // ▐▋  1
                 "\u{2590}\u{258A}".into(),  // ▐▊  2
-                "\u{2590}\u{2589}".into(),  // ▐▉  3  largest
+                "\u{2590}\u{2589}".into(),  // ▐▉  3
+                "\u{2588}\u{258A}".into(),  // █▊  4
+                "\u{2588}\u{2589}".into(),  // █▉  5
+                "\u{2588}\u{2588}".into(),  // ██  6  largest
             ],
             bar_home_idx: 0,
         }
@@ -91,7 +93,7 @@ mod tests {
     #[test]
     fn displacement_max_is_largest() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(1.0), "\u{2590}\u{2589}"); // ▐▉
+        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}\u{2588}"); // ██
     }
 
     #[test]

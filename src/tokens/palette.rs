@@ -178,8 +178,9 @@ impl Default for Palette {
                 Color::Ansi256(147),
             ],
 
-            pulse_a: Color::Named(NamedColor::Blue),
-            pulse_b: Color::Named(NamedColor::Cyan),
+            // Truecolor gradient: deep blue (rest) → bright cyan (peak)
+            pulse_a: Color::Rgb(60, 100, 180),
+            pulse_b: Color::Rgb(80, 220, 255),
 
             bar_idle: Color::Named(NamedColor::Green),
             bar_error: Color::Named(NamedColor::Red),
