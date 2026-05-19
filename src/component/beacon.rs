@@ -124,17 +124,17 @@ pub struct BeaconProps {
 fn render_header(state: &BeaconState, pulse: Option<&Pulse>, theme: &Theme) -> String {
     let mut header = String::new();
 
-    // Bar character (animated or static)
+    // Bar character: animated pulse when active, medium (home) when idle
     let bar = if state.is_active {
         if let Some(p) = pulse {
             p.render_bar(theme)
         } else {
             let color = bar_color(state.severity, theme);
-            Pulse::render_static(theme.beacon.bar_chars[0], &color)
+            Pulse::render_home(theme, &color)
         }
     } else {
         let color = bar_color(state.severity, theme);
-        Pulse::render_static(theme.beacon.bar_chars[0], &color)
+        Pulse::render_home(theme, &color)
     };
 
     header.push_str(&bar);
