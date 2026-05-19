@@ -47,7 +47,7 @@ fn main() {
         ..BeaconState::default()
     };
 
-    for i in 0..25 {
+    for i in 0..60 {
         if i % 3 == 0 && i > 0 {
             painter.stream_line(format!("  | Compiling dep-{} v0.1.0", i / 3));
         }
@@ -56,7 +56,7 @@ fn main() {
         painter.render_frame(&frame.lines);
         thread::sleep(Duration::from_millis(theme.beacon.frame_interval_ms()));
 
-        if i == 8 {
+        if i == 20 {
             state.items[0].status = StatusIcon::Success;
             state.items[0].message = "evaluation completed".into();
             state.items[0].metadata = Some("2.1s".into());
@@ -68,7 +68,7 @@ fn main() {
                 metadata: None, detail: None, priority: 9,
             });
         }
-        if i == 16 {
+        if i == 40 {
             state.items[1].status = StatusIcon::Success;
             state.items[1].message = "myservice:rust".into();
             state.items[1].metadata = Some("4.2s".into());

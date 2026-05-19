@@ -24,18 +24,17 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 12,
             pulse_cycle_ms: 3200,
-            // 7 stages — left-aligned, left edge fixed with tree ├
-            // Pulse expands RIGHT from home, contracts LEFT from home
+            // 5 stages — left column is always █ (matches ├ width)
+            // Pulse expands RIGHT into the second column
+            // Left edge perfectly aligned with tree connectors
             bar_frames: vec![
-                "\u{258F}".into(),  // ▏  0  smallest (contract peak)
-                "\u{258E}".into(),  // ▎  1
-                "\u{258D}".into(),  // ▍  2
-                "\u{258C}".into(),  // ▌  3  HOME (mid)
-                "\u{258B}".into(),  // ▋  4
-                "\u{258A}".into(),  // ▊  5
-                "\u{2589}".into(),  // ▉  6  largest (expand peak)
+                "\u{2588} ".into(), // █   0  HOME (full block + space)
+                "\u{2588}\u{258F}".into(), // █▏  1
+                "\u{2588}\u{258E}".into(), // █▎  2
+                "\u{2588}\u{258D}".into(), // █▍  3
+                "\u{2588}\u{258C}".into(), // █▌  4  PEAK (full block + half block)
             ],
-            bar_home_idx: 3,
+            bar_home_idx: 0,
         }
     }
 }
@@ -80,9 +79,9 @@ mod tests {
     }
 
     #[test]
-    fn home_frame_is_left_half() {
+    fn home_frame_is_full_block_space() {
         let t = BeaconTokens::default();
-        assert_eq!(t.home_frame(), "\u{258C}"); // ▌
+        assert_eq!(t.home_frame(), "\u{2588} "); // █
     }
 
     #[test]
@@ -92,14 +91,15 @@ mod tests {
     }
 
     #[test]
-    fn displacement_max_is_largest() {
+    fn displacement_max_is_peak() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(1.0), "\u{2589}"); // ▉
+        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}\u{258C}"); // █▌
     }
 
     #[test]
-    fn displacement_min_is_smallest() {
+    fn displacement_min_is_home() {
+        // No contraction below home — clamps to home
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(-1.0), "\u{258F}"); // ▏
+        assert_eq!(t.frame_for_displacement(-1.0), t.home_frame());
     }
 }
