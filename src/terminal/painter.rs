@@ -14,7 +14,13 @@
 
 use console::Term;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use super::sync_update::{SYNC_BEGIN, SYNC_END};
+
+/// Global flag: set to true when cursor is hidden.
+/// The ctrlc handler reads this to know whether to restore cursor.
+static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 /// Terminal painter that manages streaming output with a pinned region
 /// stuck to the bottom of the terminal.
@@ -189,10 +195,16 @@ impl Painter {
     }
 
     /// Hide the terminal cursor (call at start of animation).
+    ///
+    /// Installs a signal handler (ctrlc) that restores the cursor
+    /// if the process is killed. Safe to call multiple times.
     pub fn hide_cursor(&mut self) {
         if !self.cursor_hidden {
+            // Install ctrlc handler once to restore cursor on kill
+            install_cursor_restore_hook();
             let _ = self.term.hide_cursor();
             self.cursor_hidden = true;
+            CURSOR_HIDDEN.store(true, Ordering::SeqCst);
         }
     }
 
@@ -201,6 +213,7 @@ impl Painter {
         if self.cursor_hidden {
             let _ = self.term.show_cursor();
             self.cursor_hidden = false;
+            CURSOR_HIDDEN.store(false, Ordering::SeqCst);
         }
     }
 
@@ -229,6 +242,24 @@ impl Drop for Painter {
     fn drop(&mut self) {
         self.show_cursor();
     }
+}
+
+/// Install a ctrlc handler that restores the cursor before exiting.
+/// Safe to call multiple times — only installs once.
+fn install_cursor_restore_hook() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+
+    ONCE.call_once(|| {
+        let _ = ctrlc::set_handler(move || {
+            if CURSOR_HIDDEN.load(Ordering::SeqCst) {
+                // Restore cursor using raw ANSI (can't use Term in signal handler)
+                let _ = std::io::stderr().write_all(b"\x1b[?25h");
+                let _ = std::io::stderr().flush();
+            }
+            std::process::exit(130); // 128 + SIGINT(2)
+        });
+    });
 }
 
 #[cfg(test)]
