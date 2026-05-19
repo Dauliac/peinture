@@ -37,7 +37,7 @@ fn main() {
     }
 
     // Interactive mode with pinned beacon
-    let mut painter = Painter::new(ctx.term_width);
+    let mut painter = Painter::new(ctx.term_width, ctx.term_height);
     painter.hide_cursor();
 
     // Phase 1: Evaluating

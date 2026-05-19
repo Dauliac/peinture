@@ -22,7 +22,7 @@ fn main() {
     }
 
     let theme = Theme::default();
-    let mut painter = Painter::new(ctx.term_width);
+    let mut painter = Painter::new(ctx.term_width, ctx.term_height);
     painter.hide_cursor();
 
     let deps = [

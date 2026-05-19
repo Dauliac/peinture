@@ -39,7 +39,7 @@
 //! use peinture::{Theme, Painter, Beacon, BeaconState};
 //!
 //! let theme = Theme::default();
-//! let mut painter = Painter::new(80);
+//! let mut painter = Painter::new(80, 24);
 //! // ... see examples/ for full usage
 //! ```
 
