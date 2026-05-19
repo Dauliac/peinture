@@ -11,8 +11,10 @@ pub struct BeaconTokens {
     pub fps: u8,
     /// Pulse breathing cycle duration in milliseconds (default: 2000).
     pub pulse_cycle_ms: u32,
-    /// Bar characters for pulse animation: [thick, medium, thin].
-    pub bar_chars: [char; 3],
+    /// Bar strings for pulse animation: [large, medium, small].
+    /// Each is a multi-char string for centered expansion.
+    /// Default: ["██", "▐▌", "▕▏"]
+    pub bar_frames: [String; 3],
 }
 
 impl Default for BeaconTokens {
@@ -21,10 +23,10 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 5,
             pulse_cycle_ms: 2000,
-            bar_chars: [
-                '\u{2588}', // full block (maximum, resting)
-                '\u{258A}', // left 3/4 block (medium)
-                '\u{258C}', // left 1/2 block (peak)
+            bar_frames: [
+                "\u{2588}\u{2588}".into(),  // ██  full (large, expand)
+                "\u{2590}\u{258C}".into(),  // ▐▌  half (medium, home)
+                "\u{2595}\u{258F}".into(),  // ▕▏  thin (small, contract)
             ],
         }
     }
@@ -49,9 +51,10 @@ mod tests {
     }
 
     #[test]
-    fn default_bar_chars() {
+    fn default_bar_frames() {
         let t = BeaconTokens::default();
-        assert_eq!(t.bar_chars[0], '\u{2588}');
-        assert_eq!(t.bar_chars[2], '\u{258C}');
+        assert_eq!(t.bar_frames[0], "██");
+        assert_eq!(t.bar_frames[1], "▐▌");
+        assert_eq!(t.bar_frames[2], "▕▏");
     }
 }
