@@ -30,7 +30,8 @@ impl Default for BeaconTokens {
             bar_frames: vec![
                 "\u{2588} ".into(), // █   0  HOME (full block + space)
                 "\u{2588}\u{258F}".into(), // █▏  1
-                "\u{2588}\u{258E}".into(), // █▎  2  PEAK (subtle)
+                "\u{2588}\u{258E}".into(), // █▎  2
+                "\u{2588}\u{258D}".into(), // █▍  3  PEAK
             ],
             bar_home_idx: 0,
         }
@@ -91,7 +92,7 @@ mod tests {
     #[test]
     fn displacement_max_is_peak() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}\u{258E}"); // █▎
+        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}\u{258D}"); // █▍
     }
 
     #[test]
