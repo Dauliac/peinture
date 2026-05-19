@@ -67,10 +67,25 @@ impl Painter {
         // Set up or resize scroll region
         if !self.initialized || height_changed {
             if height_changed && self.initialized {
-                // Beacon size changed: clear old beacon area first
+                // Beacon size changed: clear old beacon area, resize scroll region
                 self.clear_beacon_area();
+                self.setup_scroll_region(beacon_height);
+
+                // If beacon shrank (scroll region grew), the newly exposed rows
+                // are blank. Scroll them out by pushing empty lines up.
+                if beacon_height < self.pinned_line_count as u16 {
+                    let new_scroll_bottom = self.term_height.saturating_sub(beacon_height);
+                    let rows_freed = self.pinned_line_count as u16 - beacon_height;
+                    let mut scroll_buf = String::new();
+                    for _ in 0..rows_freed {
+                        scroll_buf.push_str(&format!("\x1b[{new_scroll_bottom};1H\n\x1b[2K"));
+                    }
+                    let _ = self.term.write_all(scroll_buf.as_bytes());
+                    let _ = self.term.flush();
+                }
+            } else {
+                self.setup_scroll_region(beacon_height);
             }
-            self.setup_scroll_region(beacon_height);
         }
 
         let scroll_bottom = self.term_height.saturating_sub(beacon_height);
