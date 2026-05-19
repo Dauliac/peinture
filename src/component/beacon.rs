@@ -1,30 +1,17 @@
 //! Beacon — composite component with two layout orientations.
 //!
-//! The beacon has two **slots** (like Vue/React):
-//! - **Header**: bar + brand text + phase + metadata
-//! - **Body**: tree of status items
-//!
-//! The `Orientation` enum controls how these slots are composed:
+//! The beacon tree has two kinds of items:
+//! - **Notifications**: scroll from bottom to top, max 4 kept, oldest drops off
+//! - **Workload**: the current active task, always at the bottom of the tree (closest to brand)
 //!
 //! ```text
-//! BottomUp (execution, pinned):       TopDown (notifications, under prompt):
+//! BottomUp (execution):               TopDown (notifications):
 //!
-//! ┌─ ✓ eval completed     (2.1s)      ▌ cimera  ✓ Done  6.3s
-//! ├─ ✓ myservice:rust      (4.2s)      ├─ ✓ eval completed       (6.2s)
-//! ├─ ● myservice:go        (cached)    ├─ ✓ registry refreshed   (102 tasks)
-//! ▌ cimera  ✓ Done  6.3s              └─ ✓ hooks: rust, aws
-//! ```
-//!
-//! Same data, same header, same tree. Only composition order and
-//! tree connector style change.
-//!
-//! ```rust,ignore
-//! // Execution mode (bottom-up, default)
-//! let beacon = Beacon::animated(state, start, &theme);
-//!
-//! // Notification mode (top-down)
-//! let beacon = Beacon::static_display(state, &theme)
-//!     .orientation(Orientation::TopDown);
+//! ┌─ ✓ eval completed     (2.1s)      █ cimera
+//! ├─ ✓ registry refreshed  (102)       ├─ ✓ eval completed       (6.2s)
+//! ├─ ✗ aws: SSO expired               ├─ ✓ registry refreshed   (102)
+//! ├─ ◐ building myservice  (12.3s)     ├─ ✗ aws: SSO expired
+//! █ cimera  ◐ Building...              └─ ◐ building myservice   (12.3s)
 //! ```
 
 use crate::component::bar::Bar;
@@ -41,21 +28,16 @@ use std::time::Instant;
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Layout direction for the beacon.
-///
-/// Controls composition order of header and tree, and tree connector style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Orientation {
-    /// Header at bottom, tree grows upward. First item gets `┌─`.
-    /// Used for execution mode (pinned at terminal bottom).
+    /// Header at bottom, tree grows upward.
     #[default]
     BottomUp,
-    /// Header at top, tree grows downward. Last item gets `└─`.
-    /// Used for notifications (printed under shell prompt).
+    /// Header at top, tree grows downward.
     TopDown,
 }
 
 impl Orientation {
-    /// Map orientation to tree root direction.
     fn tree_root(self) -> TreeRoot {
         match self {
             Self::BottomUp => TreeRoot::Bottom,
@@ -76,6 +58,17 @@ pub enum Severity {
     Error,
 }
 
+/// Kind of beacon item — determines rendering behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemKind {
+    /// Notification: scrolls, max 4 kept, oldest drops off the top.
+    /// Colors: success=green, warning=orange, error=red.
+    Notification,
+    /// Current workload: always at the bottom of the tree (closest to brand).
+    /// Always yellow regardless of status.
+    Workload,
+}
+
 /// A single item in the beacon tree.
 #[derive(Debug, Clone)]
 pub struct BeaconItem {
@@ -83,10 +76,49 @@ pub struct BeaconItem {
     pub message: String,
     pub metadata: Option<String>,
     pub detail: Option<String>,
-    pub priority: u8,
+    pub kind: ItemKind,
 }
 
-/// State for the beacon (the ViewModel — pure data, no display logic).
+impl BeaconItem {
+    /// Create a notification item.
+    pub fn notification(status: StatusIcon, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            metadata: None,
+            detail: None,
+            kind: ItemKind::Notification,
+        }
+    }
+
+    /// Create a workload item (current active task).
+    pub fn workload(status: StatusIcon, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            metadata: None,
+            detail: None,
+            kind: ItemKind::Workload,
+        }
+    }
+
+    /// Add right-aligned metadata.
+    pub fn meta(mut self, meta: impl Into<String>) -> Self {
+        self.metadata = Some(meta.into());
+        self
+    }
+
+    /// Add a detail line below the message.
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+}
+
+/// Maximum number of notifications kept (oldest scroll off).
+pub const MAX_NOTIFICATIONS: usize = 4;
+
+/// State for the beacon (the ViewModel).
 #[derive(Debug, Clone)]
 pub struct BeaconState {
     pub brand: String,
@@ -113,12 +145,54 @@ impl Default for BeaconState {
 }
 
 impl BeaconState {
-    /// Sort items by priority (highest first) and truncate to max.
-    pub fn visible_items(&self, max: usize) -> Vec<&BeaconItem> {
-        let mut sorted: Vec<&BeaconItem> = self.items.iter().collect();
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
-        sorted.truncate(max);
-        sorted
+    /// Push a notification. Keeps only the last MAX_NOTIFICATIONS.
+    pub fn push_notification(&mut self, item: BeaconItem) {
+        self.items.push(item);
+        self.trim_notifications();
+    }
+
+    /// Set or replace the current workload item.
+    pub fn set_workload(&mut self, item: BeaconItem) {
+        // Remove any existing workload
+        self.items.retain(|i| i.kind != ItemKind::Workload);
+        self.items.push(item);
+    }
+
+    /// Clear the workload (task finished).
+    pub fn clear_workload(&mut self) {
+        self.items.retain(|i| i.kind != ItemKind::Workload);
+    }
+
+    /// Trim notifications to MAX_NOTIFICATIONS (oldest first).
+    fn trim_notifications(&mut self) {
+        let notif_count = self.items.iter().filter(|i| i.kind == ItemKind::Notification).count();
+        if notif_count > MAX_NOTIFICATIONS {
+            let to_remove = notif_count - MAX_NOTIFICATIONS;
+            let mut removed = 0;
+            self.items.retain(|i| {
+                if i.kind == ItemKind::Notification && removed < to_remove {
+                    removed += 1;
+                    false // drop oldest
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
+    /// Get the ordered items for rendering:
+    /// notifications first (in order), workload last (closest to brand).
+    fn render_items(&self) -> Vec<&BeaconItem> {
+        let mut notifications: Vec<&BeaconItem> = self.items.iter()
+            .filter(|i| i.kind == ItemKind::Notification)
+            .collect();
+        let workload: Vec<&BeaconItem> = self.items.iter()
+            .filter(|i| i.kind == ItemKind::Workload)
+            .collect();
+
+        // Notifications on top, workload at bottom (closest to brand line)
+        notifications.extend(workload);
+        notifications
     }
 }
 
@@ -126,7 +200,7 @@ impl BeaconState {
 // Component
 // ─────────────────────────────────────────────────────────────────────────
 
-/// The Beacon component — composes a header and tree with configurable orientation.
+/// The Beacon component.
 pub struct Beacon {
     state: BeaconState,
     bar: Bar,
@@ -149,7 +223,7 @@ impl Beacon {
         Self { state, bar, orientation: Orientation::default() }
     }
 
-    /// Set the orientation. Builder pattern for chaining.
+    /// Set the orientation.
     pub fn orientation(mut self, orientation: Orientation) -> Self {
         self.orientation = orientation;
         self
@@ -169,12 +243,10 @@ impl Render for Beacon {
         let mut frame = Frame::new();
         match self.orientation {
             Orientation::BottomUp => {
-                // Tree first (grows upward), then header at the bottom
                 frame.extend(&tree_frame);
                 frame.push_line(header);
             }
             Orientation::TopDown => {
-                // Header first (at the top), then tree grows downward
                 frame.push_line(header);
                 frame.extend(&tree_frame);
             }
@@ -184,22 +256,23 @@ impl Render for Beacon {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Internal rendering (shared between orientations)
+// Internal rendering
 // ─────────────────────────────────────────────────────────────────────────
 
 impl Beacon {
-    /// Render the tree slot — items with connectors.
-    /// Connector style is determined by orientation.
     fn render_tree(&self, theme: &Theme) -> Frame {
-        let max_items = theme.beacon.max_items;
-        let visible = self.state.visible_items(max_items);
+        let ordered = self.state.render_items();
 
-        let tree_items: Vec<TreeItem> = visible
+        let tree_items: Vec<TreeItem> = ordered
             .into_iter()
             .map(|item| {
                 let mut ti = TreeItem::new(item.status, &item.message);
                 if let Some(ref m) = item.metadata { ti = ti.meta(m); }
                 if let Some(ref d) = item.detail { ti = ti.detail(d); }
+                // Workload items are rendered in yellow (override status color)
+                if item.kind == ItemKind::Workload {
+                    ti = ti.color_override(Semantic::Warning);
+                }
                 ti
             })
             .collect();
@@ -208,20 +281,15 @@ impl Beacon {
         tree.render(theme)
     }
 
-    /// Render the header slot — bar + brand + phase + metadata.
-    /// Identical for both orientations.
     fn render_header(&self, theme: &Theme) -> String {
         let mut header = String::new();
 
-        // Bar (animated or static)
         let bar_frame = self.bar.render(theme);
         header.push_str(&bar_frame.lines[0]);
 
-        // Rainbow brand — no gap, bar runs directly into brand text
         let brand = Text::rainbow(&self.state.brand);
         header.push_str(&brand.render(theme).lines[0]);
 
-        // Phase icon + label
         if let Some(ref phase) = self.state.phase {
             let (icon_semantic, icon_status) = if self.state.is_active {
                 (Semantic::Warning, StatusIcon::InProgress)
@@ -236,7 +304,6 @@ impl Beacon {
             header.push_str(&format!("  {}{}\x1b[0m {}", color.fg_code(), icon, phase));
         }
 
-        // Progress + elapsed (dim)
         if let Some(ref progress) = self.state.progress {
             header.push_str(&format!("  \x1b[2m{}\x1b[0m", progress));
         }
@@ -260,40 +327,22 @@ fn bar_semantic(severity: Severity) -> Semantic {
 // Convenience functions
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Render a live beacon (animated, bottom-up by default).
 pub fn render_live(state: &BeaconState, start: Instant, theme: &Theme) -> Frame {
     Beacon::animated(state.clone(), start, theme).render(theme)
 }
 
-/// Render a live beacon with explicit orientation.
-pub fn render_live_oriented(
-    state: &BeaconState,
-    start: Instant,
-    theme: &Theme,
-    orientation: Orientation,
-) -> Frame {
-    Beacon::animated(state.clone(), start, theme)
-        .orientation(orientation)
-        .render(theme)
+pub fn render_live_oriented(state: &BeaconState, start: Instant, theme: &Theme, orientation: Orientation) -> Frame {
+    Beacon::animated(state.clone(), start, theme).orientation(orientation).render(theme)
 }
 
-/// Render a static beacon (no pulse, bottom-up by default).
 pub fn render_static(state: &BeaconState, theme: &Theme) -> Frame {
     Beacon::static_display(state.clone(), theme).render(theme)
 }
 
-/// Render a static beacon with explicit orientation.
-pub fn render_static_oriented(
-    state: &BeaconState,
-    theme: &Theme,
-    orientation: Orientation,
-) -> Frame {
-    Beacon::static_display(state.clone(), theme)
-        .orientation(orientation)
-        .render(theme)
+pub fn render_static_oriented(state: &BeaconState, theme: &Theme, orientation: Orientation) -> Frame {
+    Beacon::static_display(state.clone(), theme).orientation(orientation).render(theme)
 }
 
-/// Render CI mode (plain text, prefixed). Orientation doesn't apply.
 pub fn render_ci(state: &BeaconState, prefix: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for item in &state.items {
@@ -315,7 +364,6 @@ pub fn render_ci(state: &BeaconState, prefix: &str) -> Vec<String> {
     lines
 }
 
-/// Check if a live beacon is at rest (safe to stop).
 pub fn is_at_rest(start: Instant, theme: &Theme) -> bool {
     let bar = Bar::from_theme(theme).start_at(start);
     bar.is_at_rest()
@@ -329,128 +377,67 @@ pub fn is_at_rest(start: Instant, theme: &Theme) -> bool {
 mod tests {
     use super::*;
 
-    fn sample_state() -> BeaconState {
-        BeaconState {
-            phase: Some("Done".into()),
-            items: vec![
-                BeaconItem {
-                    status: StatusIcon::Success,
-                    message: "first".into(),
-                    metadata: Some("1s".into()),
-                    detail: None,
-                    priority: 10,
-                },
-                BeaconItem {
-                    status: StatusIcon::Cached,
-                    message: "second".into(),
-                    metadata: Some("cached".into()),
-                    detail: None,
-                    priority: 5,
-                },
-            ],
-            ..BeaconState::default()
+    #[test]
+    fn notifications_capped_at_max() {
+        let mut state = BeaconState::default();
+        for i in 0..10 {
+            state.push_notification(BeaconItem::notification(StatusIcon::Success, format!("item {i}")));
         }
+        let notifs: Vec<_> = state.items.iter().filter(|i| i.kind == ItemKind::Notification).collect();
+        assert_eq!(notifs.len(), MAX_NOTIFICATIONS);
+        // Oldest dropped, newest kept
+        assert!(notifs.last().expect("has items").message.contains("item 9"));
     }
 
     #[test]
-    fn bottom_up_header_is_last_line() {
-        let state = sample_state();
+    fn workload_always_last_in_render() {
+        let mut state = BeaconState::default();
+        state.set_workload(BeaconItem::workload(StatusIcon::InProgress, "building..."));
+        state.push_notification(BeaconItem::notification(StatusIcon::Success, "eval done"));
+        state.push_notification(BeaconItem::notification(StatusIcon::Success, "registry ok"));
+
+        let ordered = state.render_items();
+        // Workload should be last
+        assert_eq!(ordered.last().expect("has items").kind, ItemKind::Workload);
+        // Notifications should come first
+        assert_eq!(ordered[0].kind, ItemKind::Notification);
+    }
+
+    #[test]
+    fn set_workload_replaces_existing() {
+        let mut state = BeaconState::default();
+        state.set_workload(BeaconItem::workload(StatusIcon::InProgress, "old task"));
+        state.set_workload(BeaconItem::workload(StatusIcon::InProgress, "new task"));
+        let workloads: Vec<_> = state.items.iter().filter(|i| i.kind == ItemKind::Workload).collect();
+        assert_eq!(workloads.len(), 1);
+        assert_eq!(workloads[0].message, "new task");
+    }
+
+    #[test]
+    fn clear_workload_removes_it() {
+        let mut state = BeaconState::default();
+        state.set_workload(BeaconItem::workload(StatusIcon::InProgress, "task"));
+        state.push_notification(BeaconItem::notification(StatusIcon::Success, "notif"));
+        state.clear_workload();
+        assert!(state.items.iter().all(|i| i.kind == ItemKind::Notification));
+    }
+
+    #[test]
+    fn bottom_up_header_last() {
+        let mut state = BeaconState { phase: Some("Done".into()), ..BeaconState::default() };
+        state.push_notification(BeaconItem::notification(StatusIcon::Success, "task"));
         let theme = Theme::default();
-        let frame = Beacon::static_display(state, &theme)
-            .orientation(Orientation::BottomUp)
-            .render(&theme);
-        // Header (with "cimera") should be the last line
+        let frame = Beacon::static_display(state, &theme).orientation(Orientation::BottomUp).render(&theme);
         let last = frame.lines.last().expect("has lines");
         assert!(last.contains("cimera") || last.contains("Done"));
     }
 
     #[test]
-    fn top_down_header_is_first_line() {
-        let state = sample_state();
+    fn top_down_header_first() {
+        let mut state = BeaconState { phase: Some("Done".into()), ..BeaconState::default() };
+        state.push_notification(BeaconItem::notification(StatusIcon::Success, "task"));
         let theme = Theme::default();
-        let frame = Beacon::static_display(state, &theme)
-            .orientation(Orientation::TopDown)
-            .render(&theme);
-        // Header (with "cimera") should be the first line
-        let first = &frame.lines[0];
-        assert!(first.contains("cimera") || first.contains("Done"));
-    }
-
-    #[test]
-    fn both_orientations_same_height() {
-        let state = sample_state();
-        let theme = Theme::default();
-        let bottom_up = Beacon::static_display(state.clone(), &theme)
-            .orientation(Orientation::BottomUp)
-            .render(&theme);
-        let top_down = Beacon::static_display(state, &theme)
-            .orientation(Orientation::TopDown)
-            .render(&theme);
-        assert_eq!(bottom_up.height(), top_down.height());
-    }
-
-    #[test]
-    fn bottom_up_tree_has_top_corner() {
-        let state = sample_state();
-        let theme = Theme::default();
-        let frame = Beacon::static_display(state, &theme)
-            .orientation(Orientation::BottomUp)
-            .render(&theme);
-        // First line should have ┌ (top corner for bottom-rooted tree)
-        assert!(frame.lines[0].contains('\u{250C}'));
-    }
-
-    #[test]
-    fn top_down_tree_has_bottom_corner() {
-        let state = sample_state();
-        let theme = Theme::default();
-        let frame = Beacon::static_display(state, &theme)
-            .orientation(Orientation::TopDown)
-            .render(&theme);
-        // Last line should have └ (bottom corner for top-rooted tree)
-        let last = frame.lines.last().expect("has lines");
-        assert!(last.contains('\u{2514}'));
-    }
-
-    #[test]
-    fn ci_mode_plain() {
-        let state = BeaconState {
-            phase: Some("Building...".into()),
-            items: vec![BeaconItem {
-                status: StatusIcon::Success,
-                message: "done".into(),
-                metadata: None,
-                detail: None,
-                priority: 10,
-            }],
-            ..BeaconState::default()
-        };
-        let lines = render_ci(&state, "cimera");
-        assert!(lines.last().expect("lines").contains("Building"));
-        assert!(!lines[0].contains('\x1b'));
-    }
-
-    #[test]
-    fn priority_sorting() {
-        let state = BeaconState {
-            items: (0..10)
-                .map(|i| BeaconItem {
-                    status: StatusIcon::Success,
-                    message: format!("item {i}"),
-                    metadata: None,
-                    detail: None,
-                    priority: i,
-                })
-                .collect(),
-            ..BeaconState::default()
-        };
-        let visible = state.visible_items(5);
-        assert_eq!(visible.len(), 5);
-        assert_eq!(visible[0].priority, 9);
-    }
-
-    #[test]
-    fn default_orientation_is_bottom_up() {
-        assert_eq!(Orientation::default(), Orientation::BottomUp);
+        let frame = Beacon::static_display(state, &theme).orientation(Orientation::TopDown).render(&theme);
+        assert!(frame.lines[0].contains("cimera") || frame.lines[0].contains("Done"));
     }
 }

@@ -20,6 +20,8 @@ pub struct TreeItem {
     pub message: String,
     pub metadata: Option<String>,
     pub detail: Option<String>,
+    /// Override the color (ignores status-based color). Used for workload items.
+    pub color_override: Option<Semantic>,
 }
 
 impl TreeItem {
@@ -30,6 +32,7 @@ impl TreeItem {
             message: message.into(),
             metadata: None,
             detail: None,
+            color_override: None,
         }
     }
 
@@ -42,6 +45,12 @@ impl TreeItem {
     /// Add a detail line below the message (for errors, hints).
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// Override the color for this item (e.g., yellow for workload).
+    pub fn color_override(mut self, semantic: Semantic) -> Self {
+        self.color_override = Some(semantic);
         self
     }
 }
@@ -113,8 +122,9 @@ impl Render for Tree {
             };
 
             let icon = theme.icons.for_status(item.status);
-            let icon_color = semantic_for_status(item.status).resolve(&theme.palette);
-            let msg_color = semantic_for_status(item.status).resolve(&theme.palette);
+            let semantic = item.color_override.unwrap_or_else(|| semantic_for_status(item.status));
+            let icon_color = semantic.resolve(&theme.palette);
+            let msg_color = icon_color;
 
             let main = if let Some(ref meta) = item.metadata {
                 let prefix = format!(

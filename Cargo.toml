@@ -7,11 +7,16 @@ description = "Terminal UI component library with design tokens, layered renderi
 license = "MIT"
 repository = "https://github.com/Dauliac/peinture"
 
+[features]
+pty = ["dep:vt100", "dep:portable-pty"]
+
 [dependencies]
 console = "0.15"
 ctrlc = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+vt100 = { version = "0.15", optional = true }
+portable-pty = { version = "0.8", optional = true }
 
 [dev-dependencies]
 insta = "1"
@@ -36,6 +41,11 @@ path = "examples/stream_demo.rs"
 [[example]]
 name = "layout_demo"
 path = "examples/layout_demo.rs"
+
+[[example]]
+name = "pty_demo"
+path = "examples/pty_demo.rs"
+required-features = ["pty"]
 
 [lints.rust]
 unsafe_code = "deny"

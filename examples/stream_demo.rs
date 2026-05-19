@@ -34,11 +34,9 @@ fn main() {
         progress: Some("0/1 tasks".into()),
         is_active: true,
         severity: Severity::Ok,
-        items: vec![BeaconItem {
-            status: StatusIcon::InProgress,
-            message: "nix build: myservice:rust".into(),
-            metadata: None, detail: None, priority: 10,
-        }],
+        items: vec![
+            BeaconItem::workload(StatusIcon::InProgress, "nix build: myservice:rust"),
+        ],
         ..BeaconState::default()
     };
 

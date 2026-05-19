@@ -62,9 +62,14 @@ impl Painter {
     /// Render a frame: flush stream content in scroll region, redraw beacon below.
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
         let beacon_height = pinned_lines.len() as u16;
+        let height_changed = beacon_height as usize != self.pinned_line_count;
 
-        // Set up scroll region on first frame (or if beacon height changed)
-        if !self.initialized || beacon_height as usize != self.pinned_line_count {
+        // Set up or resize scroll region
+        if !self.initialized || height_changed {
+            if height_changed && self.initialized {
+                // Beacon size changed: clear old beacon area first
+                self.clear_beacon_area();
+            }
             self.setup_scroll_region(beacon_height);
         }
 
@@ -78,23 +83,23 @@ impl Painter {
         if !self.stream_buffer.is_empty() {
             let drained: Vec<String> = self.stream_buffer.drain(..).collect();
 
-            // Move cursor to the last row of the scroll region
-            // Printing here with \n scrolls content up within the region
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
 
             for line in &drained {
-                // Newline scrolls the region up, then write the line
                 buf.push_str(&format!("\n\x1b[2K{line}"));
             }
         }
 
-        // 2. Draw pinned region at the absolute bottom rows (outside scroll region)
+        // 2. Clear and redraw ALL beacon rows (prevents stale lines)
+        for row in pinned_start..=self.term_height {
+            buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+        }
         for (i, line) in pinned_lines.iter().enumerate() {
             let row = pinned_start + i as u16;
-            buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
+            buf.push_str(&format!("\x1b[{row};1H{line}"));
         }
 
-        // Park cursor at the bottom of scroll region (just above beacon)
+        // Park cursor at the bottom of scroll region
         buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
 
         buf.push_str(SYNC_END);
@@ -103,6 +108,23 @@ impl Painter {
         let _ = self.term.flush();
 
         self.pinned_line_count = pinned_lines.len();
+    }
+
+    /// Clear the old beacon area before resizing.
+    fn clear_beacon_area(&mut self) {
+        if self.pinned_line_count == 0 {
+            return;
+        }
+        let old_height = self.pinned_line_count as u16;
+        let old_start = self.term_height.saturating_sub(old_height) + 1;
+        let mut buf = String::new();
+        // Temporarily reset scroll region to access all rows
+        buf.push_str("\x1b[r");
+        for row in old_start..=self.term_height {
+            buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+        }
+        let _ = self.term.write_all(buf.as_bytes());
+        let _ = self.term.flush();
     }
 
     /// Set up the scroll region: rows 1..scroll_bottom scroll,
