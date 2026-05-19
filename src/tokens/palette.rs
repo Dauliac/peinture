@@ -57,6 +57,15 @@ impl Color {
         }
     }
 
+    /// Convert to an explicit RGB color (for clean interpolation).
+    /// Named/Ansi256 colors are converted to their approximate RGB values.
+    pub fn to_rgb_color(&self) -> Self {
+        match self.to_rgb() {
+            Some((r, g, b)) => Self::Rgb(r, g, b),
+            None => *self,
+        }
+    }
+
     /// Linear interpolation between two colors for animation.
     /// `t` is 0.0..1.0 where 0.0 = self, 1.0 = other.
     pub fn lerp(&self, other: &Self, t: f32) -> Self {
@@ -164,7 +173,7 @@ impl Default for Palette {
             error: Color::Named(NamedColor::Red),
             warning: Color::Named(NamedColor::Yellow),
             info: Color::Named(NamedColor::Cyan),
-            muted: Color::Rgb(90, 90, 90),        // RGB gray so fade lerp works smoothly
+            muted: Color::Rgb(60, 60, 60),        // dark — fade target (lerp toward darkness)
             primary: Color::Named(NamedColor::Cyan),
             secondary: Color::Named(NamedColor::White),
 

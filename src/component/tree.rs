@@ -133,10 +133,12 @@ impl Render for Tree {
             let icon = theme.icons.for_status(item.status);
             let semantic = item.color_override.unwrap_or_else(|| semantic_for_status(item.status));
             let base_color = semantic.resolve(&theme.palette);
-            // Apply fade: lerp toward muted as fade_factor increases
-            let muted = theme.palette.muted;
+            // Apply fade: lerp toward muted as fade_factor increases.
+            // Convert base to RGB first for clean interpolation (ANSI named → muddy).
             let icon_color = if item.fade_factor > 0.0 {
-                base_color.lerp(&muted, item.fade_factor)
+                let base_rgb = base_color.to_rgb_color();
+                let muted = theme.palette.muted;
+                base_rgb.lerp(&muted, item.fade_factor)
             } else {
                 base_color
             };
