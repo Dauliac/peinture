@@ -1,35 +1,33 @@
-//! Demo: rainbow text rendering with different themes.
+//! Demo: text component with rainbow, semantic colors, bold, dim.
 #![allow(clippy::print_stdout)]
 
-use peinture::tokens::{Palette, Theme};
-use peinture::component::Rainbow;
+use peinture::component::Text;
+use peinture::tokens::{Semantic, Theme};
+use peinture::traits::Render;
 
 fn main() {
-    println!("=== Rainbow Demo ===\n");
-
-    // Default theme (pastel rainbow)
     let theme = Theme::default();
-    println!("Default rainbow: {}", Rainbow::render("cimera", &theme));
-    println!("Long text:       {}", Rainbow::render("hello world from peinture!", &theme));
 
-    // Custom rainbow palette
-    let mut custom_palette = Palette::default();
-    custom_palette.rainbow = vec![
-        peinture::tokens::Color::Named(peinture::tokens::palette::NamedColor::Red),
-        peinture::tokens::Color::Named(peinture::tokens::palette::NamedColor::Green),
-        peinture::tokens::Color::Named(peinture::tokens::palette::NamedColor::Blue),
-    ];
-    println!(
-        "RGB rainbow:     {}",
-        Rainbow::render_with_palette("peinture", &custom_palette)
-    );
+    println!("=== Text Component Demo ===\n");
 
-    // Plain mode (no colors)
-    let plain = Palette::plain();
-    println!(
-        "Plain mode:      {}",
-        Rainbow::render_with_palette("cimera", &plain)
-    );
+    let rainbow = Text::rainbow("cimera");
+    println!("Rainbow:   {}", rainbow.render(&theme).lines[0]);
+
+    let success = Text::new("build succeeded").color(Semantic::Success);
+    println!("Success:   {}", success.render(&theme).lines[0]);
+
+    let error = Text::new("build failed").color(Semantic::Error).bold();
+    println!("Error:     {}", error.render(&theme).lines[0]);
+
+    let warning = Text::new("deprecated API").color(Semantic::Warning);
+    println!("Warning:   {}", warning.render(&theme).lines[0]);
+
+    let dim = Text::dim("(2.1s)");
+    println!("Dim:       {}", dim.render(&theme).lines[0]);
+
+    let plain_theme = Theme::plain();
+    let plain = Text::rainbow("cimera");
+    println!("\nPlain:     {}", plain.render(&plain_theme).lines[0]);
 
     println!("\nDone.");
 }

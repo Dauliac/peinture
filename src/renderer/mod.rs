@@ -1,3 +1,3 @@
-//! Re-export the painter from terminal module.
+//! Re-export the painter.
 
 pub use crate::terminal::painter::Painter;

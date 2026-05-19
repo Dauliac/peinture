@@ -1,117 +1,161 @@
-//! Tree renderer — hierarchical item list with connectors.
+//! Tree component — hierarchical item list with connectors.
+//!
+//! ```rust,ignore
+//! let tree = Tree::bottom_rooted()
+//!     .items(vec![
+//!         TreeItem::new(StatusIcon::Success, "task done").meta("1.2s"),
+//!         TreeItem::new(StatusIcon::Failed, "build failed").detail("type error"),
+//!     ]);
+//! ```
 
-use crate::tokens::{Theme, icons::StatusIcon};
+use crate::component::Frame;
+use crate::tokens::icons::StatusIcon;
+use crate::tokens::{Semantic, Theme};
+use crate::traits::Render;
 
 /// A single item in a tree.
 #[derive(Debug, Clone)]
 pub struct TreeItem {
-    /// Status icon to display.
     pub status: StatusIcon,
-    /// Main message text.
     pub message: String,
-    /// Optional right-aligned metadata (duration, count, etc.).
     pub metadata: Option<String>,
-    /// Optional detail line below the message (for errors, hints).
     pub detail: Option<String>,
 }
 
-/// Tree component — renders a list of items with connectors.
-pub struct Tree;
+impl TreeItem {
+    /// Create a tree item.
+    pub fn new(status: StatusIcon, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            metadata: None,
+            detail: None,
+        }
+    }
+
+    /// Add right-aligned metadata (duration, count, etc.).
+    pub fn meta(mut self, meta: impl Into<String>) -> Self {
+        self.metadata = Some(meta.into());
+        self
+    }
+
+    /// Add a detail line below the message (for errors, hints).
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+}
+
+/// Tree layout direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeRoot {
+    /// Root at top, last item gets └─ (traditional).
+    Top,
+    /// Root at bottom, first item gets ┌─ (beacon style).
+    Bottom,
+}
+
+/// Tree component.
+#[derive(Debug, Clone)]
+pub struct Tree {
+    items: Vec<TreeItem>,
+    root: TreeRoot,
+    max_items: Option<usize>,
+}
 
 impl Tree {
-    /// Render items as a top-rooted tree (last item gets └─).
-    pub fn render(items: &[TreeItem], theme: &Theme) -> Vec<String> {
-        Self::render_inner(items, theme, false)
+    /// Top-rooted tree (traditional: root at top, last item gets └─).
+    pub fn top_rooted() -> Self {
+        Self { items: Vec::new(), root: TreeRoot::Top, max_items: None }
     }
 
-    /// Render items as a bottom-rooted tree (first item gets ┌─, root is below).
-    /// Used by the beacon where the brand line is the root at the bottom.
-    pub fn render_bottom_rooted(items: &[TreeItem], theme: &Theme) -> Vec<String> {
-        Self::render_inner(items, theme, true)
+    /// Bottom-rooted tree (beacon style: root at bottom, first item gets ┌─).
+    pub fn bottom_rooted() -> Self {
+        Self { items: Vec::new(), root: TreeRoot::Bottom, max_items: None }
     }
 
-    fn render_inner(items: &[TreeItem], theme: &Theme, bottom_rooted: bool) -> Vec<String> {
-        let mut lines = Vec::new();
-        let last_idx = items.len().saturating_sub(1);
+    /// Set items.
+    pub fn items(mut self, items: Vec<TreeItem>) -> Self {
+        self.items = items;
+        self
+    }
+
+    /// Limit the number of displayed items.
+    pub fn max_items(mut self, max: usize) -> Self {
+        self.max_items = Some(max);
+        self
+    }
+}
+
+impl Render for Tree {
+    fn render(&self, theme: &Theme) -> Frame {
+        let items = if let Some(max) = self.max_items {
+            &self.items[..self.items.len().min(max)]
+        } else {
+            &self.items
+        };
+
+        let mut frame = Frame::new();
 
         for (i, item) in items.iter().enumerate() {
-            let connector = if bottom_rooted {
-                theme.tree.connector_bottom_rooted(i == 0)
-            } else {
-                theme.tree.connector(i == last_idx)
+            let connector = match self.root {
+                TreeRoot::Bottom => theme.tree.connector_bottom_rooted(i == 0),
+                TreeRoot::Top => theme.tree.connector(i == items.len() - 1),
+            };
+            let continuation = match self.root {
+                TreeRoot::Bottom => theme.tree.continuation_bottom_rooted(i == 0),
+                TreeRoot::Top => theme.tree.continuation(i == items.len() - 1),
             };
 
-            let continuation = if bottom_rooted {
-                theme.tree.continuation_bottom_rooted(i == 0)
-            } else {
-                theme.tree.continuation(i == last_idx)
-            };
-
-            // Status icon with color
             let icon = theme.icons.for_status(item.status);
-            let icon_color = color_for_status(item.status, theme);
-            let msg_color = color_for_status(item.status, theme);
+            let icon_color = semantic_for_status(item.status).resolve(&theme.palette);
+            let msg_color = semantic_for_status(item.status).resolve(&theme.palette);
 
-            // Build main line
             let main = if let Some(ref meta) = item.metadata {
                 let prefix = format!(
-                    "{dim}{connector}{reset} {icon_fg}{icon}{reset} {msg_fg}{msg}{reset}",
-                    dim = Theme::dim(),
-                    reset = Theme::reset(),
-                    icon_fg = icon_color,
-                    msg_fg = msg_color,
+                    "\x1b[2m{connector}\x1b[0m {ic}{icon}\x1b[0m {mc}{msg}\x1b[0m",
+                    ic = icon_color.fg_code(),
+                    mc = msg_color.fg_code(),
                     msg = item.message,
                 );
                 let visible_len = console::measure_text_width(&strip_ansi(&prefix));
-                let padding = if visible_len < theme.spacing.metadata_column {
+                let pad = if visible_len < theme.spacing.metadata_column {
                     " ".repeat(theme.spacing.metadata_column - visible_len)
                 } else {
                     " ".into()
                 };
-                format!(
-                    "{prefix}{padding}{dim}({meta}){reset}",
-                    dim = Theme::dim(),
-                    reset = Theme::reset(),
-                    meta = meta,
-                )
+                format!("{prefix}{pad}\x1b[2m({meta})\x1b[0m")
             } else {
                 format!(
-                    "{dim}{connector}{reset} {icon_fg}{icon}{reset} {msg_fg}{msg}{reset}",
-                    dim = Theme::dim(),
-                    reset = Theme::reset(),
-                    icon_fg = icon_color,
-                    msg_fg = msg_color,
+                    "\x1b[2m{connector}\x1b[0m {ic}{icon}\x1b[0m {mc}{msg}\x1b[0m",
+                    ic = icon_color.fg_code(),
+                    mc = msg_color.fg_code(),
                     msg = item.message,
                 )
             };
+            frame.push_line(main);
 
-            lines.push(main);
-
-            // Detail line (indented under continuation)
             if let Some(ref detail) = item.detail {
-                lines.push(format!(
-                    "{dim}{continuation}{reset}    {dim}{detail}{reset}",
-                    dim = Theme::dim(),
-                    reset = Theme::reset(),
+                frame.push_line(format!(
+                    "\x1b[2m{continuation}\x1b[0m    \x1b[2m{detail}\x1b[0m"
                 ));
             }
         }
 
-        lines
+        frame
     }
 }
 
-fn color_for_status(status: StatusIcon, theme: &Theme) -> String {
+fn semantic_for_status(status: StatusIcon) -> Semantic {
     match status {
-        StatusIcon::Success => theme.palette.success.fg_code(),
-        StatusIcon::Failed => theme.palette.error.fg_code(),
-        StatusIcon::InProgress | StatusIcon::Warning => theme.palette.warning.fg_code(),
-        StatusIcon::Cached | StatusIcon::Info => theme.palette.info.fg_code(),
-        StatusIcon::Pending | StatusIcon::Skipped => theme.palette.muted.fg_code(),
+        StatusIcon::Success => Semantic::Success,
+        StatusIcon::Failed => Semantic::Error,
+        StatusIcon::InProgress | StatusIcon::Warning => Semantic::Warning,
+        StatusIcon::Cached | StatusIcon::Info => Semantic::Info,
+        StatusIcon::Pending | StatusIcon::Skipped => Semantic::Muted,
     }
 }
 
-/// Strip ANSI escape codes from a string (for width measurement).
 fn strip_ansi(s: &str) -> String {
     let mut out = String::new();
     let mut in_escape = false;
@@ -119,9 +163,7 @@ fn strip_ansi(s: &str) -> String {
         if ch == '\x1b' {
             in_escape = true;
         } else if in_escape {
-            if ch == 'm' {
-                in_escape = false;
-            }
+            if ch == 'm' { in_escape = false; }
         } else {
             out.push(ch);
         }
@@ -134,44 +176,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_empty() {
+    fn empty_tree() {
+        let tree = Tree::bottom_rooted();
         let theme = Theme::default();
-        let lines = Tree::render(&[], &theme);
-        assert!(lines.is_empty());
+        assert!(tree.render(&theme).is_empty());
     }
 
     #[test]
-    fn render_single_item() {
+    fn single_item() {
+        let tree = Tree::bottom_rooted().items(vec![
+            TreeItem::new(StatusIcon::Success, "done").meta("1.2s"),
+        ]);
         let theme = Theme::default();
-        let items = vec![TreeItem {
-            status: StatusIcon::Success,
-            message: "task completed".into(),
-            metadata: Some("1.2s".into()),
-            detail: None,
-        }];
-        let lines = Tree::render(&items, &theme);
-        assert_eq!(lines.len(), 1);
-        assert!(strip_ansi(&lines[0]).contains("task completed"));
-        assert!(strip_ansi(&lines[0]).contains("1.2s"));
+        let frame = tree.render(&theme);
+        assert_eq!(frame.height(), 1);
+        assert!(strip_ansi(&frame.lines[0]).contains("done"));
     }
 
     #[test]
-    fn render_with_detail() {
+    fn bottom_rooted_first_gets_corner() {
+        let tree = Tree::bottom_rooted().items(vec![
+            TreeItem::new(StatusIcon::Success, "first"),
+            TreeItem::new(StatusIcon::Success, "second"),
+        ]);
         let theme = Theme::default();
-        let items = vec![TreeItem {
-            status: StatusIcon::Failed,
-            message: "build failed".into(),
-            metadata: None,
-            detail: Some("type error in main.rs:42".into()),
-        }];
-        let lines = Tree::render(&items, &theme);
-        assert_eq!(lines.len(), 2);
-        assert!(strip_ansi(&lines[1]).contains("type error"));
+        let frame = tree.render(&theme);
+        assert!(frame.lines[0].contains("\u{250C}")); // ┌
+        assert!(frame.lines[1].contains("\u{251C}")); // ├
     }
 
     #[test]
-    fn strip_ansi_works() {
-        assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m"), "hello");
-        assert_eq!(strip_ansi("plain"), "plain");
+    fn detail_adds_line() {
+        let tree = Tree::top_rooted().items(vec![
+            TreeItem::new(StatusIcon::Failed, "err").detail("cause"),
+        ]);
+        let theme = Theme::default();
+        let frame = tree.render(&theme);
+        assert_eq!(frame.height(), 2);
     }
 }

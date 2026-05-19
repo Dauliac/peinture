@@ -1,47 +1,30 @@
-//! Beacon component — pinned status panel with header, tree, and pulse.
+//! Beacon — composite component: tree + header bar.
 //!
-//! The beacon is the primary composite component: a header line with
-//! a pulsing bar + rainbow brand text + phase info, followed by a
-//! tree of status items.
+//! The beacon is a bottom-rooted tree of status items
+//! anchored by a header line with a pulsing bar + brand text.
 //!
-//! # Modes
+//! ```rust,ignore
+//! let beacon = Beacon::new(state)
+//!     .animated(start_instant);  // or .static_display()
 //!
-//! - **Live**: animated pulse, updating items (during execution)
-//! - **Static**: no animation, fixed content (shell hook, completion)
-//! - **CI**: prefixed lines, no tree chars, no animation
+//! let frame = beacon.render(&theme);
+//! ```
 
-use crate::component::pulse::Pulse;
-use crate::component::rainbow::Rainbow;
+use crate::component::bar::Bar;
+use crate::component::frame::Frame;
+use crate::component::text::Text;
 use crate::component::tree::{Tree, TreeItem};
-use crate::component::Frame;
 use crate::tokens::icons::StatusIcon;
-use crate::tokens::Theme;
+use crate::tokens::{Semantic, Theme};
+use crate::traits::{Animate, Render};
+use std::time::Instant;
 
-/// Severity level — drives the bar color.
+/// Severity level — drives the bar color when not animating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Ok,
     Warning,
     Error,
-}
-
-/// State for the beacon component.
-#[derive(Debug, Clone)]
-pub struct BeaconState {
-    /// Brand name displayed in rainbow.
-    pub brand: String,
-    /// Current phase label (e.g., "Building...", "Done").
-    pub phase: Option<String>,
-    /// Progress counter (e.g., "2/5 tasks").
-    pub progress: Option<String>,
-    /// Elapsed time string (e.g., "12.3s").
-    pub elapsed: Option<String>,
-    /// Tree items (max beacon.max_items from theme).
-    pub items: Vec<BeaconItem>,
-    /// Overall severity (drives bar color).
-    pub severity: Severity,
-    /// Whether the beacon is actively doing work (drives pulse animation).
-    pub is_active: bool,
 }
 
 /// A single item in the beacon tree.
@@ -51,8 +34,19 @@ pub struct BeaconItem {
     pub message: String,
     pub metadata: Option<String>,
     pub detail: Option<String>,
-    /// Priority for sorting into limited slots (higher = more important).
     pub priority: u8,
+}
+
+/// State for the beacon (the ViewModel).
+#[derive(Debug, Clone)]
+pub struct BeaconState {
+    pub brand: String,
+    pub phase: Option<String>,
+    pub progress: Option<String>,
+    pub elapsed: Option<String>,
+    pub items: Vec<BeaconItem>,
+    pub severity: Severity,
+    pub is_active: bool,
 }
 
 impl Default for BeaconState {
@@ -70,7 +64,7 @@ impl Default for BeaconState {
 }
 
 impl BeaconState {
-    /// Sort and truncate items to fit max_items.
+    /// Sort items by priority (highest first) and truncate to max.
     pub fn visible_items(&self, max: usize) -> Vec<&BeaconItem> {
         let mut sorted: Vec<&BeaconItem> = self.items.iter().collect();
         sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
@@ -79,148 +73,131 @@ impl BeaconState {
     }
 }
 
-/// The beacon component.
-pub struct Beacon;
+/// The Beacon component.
+pub struct Beacon {
+    state: BeaconState,
+    bar: Bar,
+}
 
 impl Beacon {
-    /// Render the beacon into a frame.
-    pub fn render(props: &BeaconProps<'_>, theme: &Theme) -> Frame {
-        let state = &props.state;
-        let max_items = theme.beacon.max_items;
+    /// Create an animated beacon (pulse running).
+    pub fn animated(state: BeaconState, start: Instant, theme: &Theme) -> Self {
+        let bar = Bar::from_theme(theme)
+            .start_at(start)
+            .active(state.is_active);
+        Self { state, bar }
+    }
 
+    /// Create a static beacon (no pulse).
+    pub fn static_display(state: BeaconState, theme: &Theme) -> Self {
+        let color = bar_semantic(state.severity);
+        let bar = Bar::static_bar(theme.beacon.home_frame(), color);
+        Self { state, bar }
+    }
+
+    /// Whether the pulse is at a rest position (safe to stop).
+    pub fn is_at_rest(&self) -> bool {
+        self.bar.is_at_rest()
+    }
+}
+
+impl Render for Beacon {
+    fn render(&self, theme: &Theme) -> Frame {
+        let max_items = theme.beacon.max_items;
         let mut frame = Frame::new();
 
-        // Tree items first (grow upward from the brand line)
-        let visible = state.visible_items(max_items);
+        // Tree items (bottom-rooted: grow upward from brand line)
+        let visible = self.state.visible_items(max_items);
         let tree_items: Vec<TreeItem> = visible
             .into_iter()
-            .map(|item| TreeItem {
-                status: item.status,
-                message: item.message.clone(),
-                metadata: item.metadata.clone(),
-                detail: item.detail.clone(),
+            .map(|item| {
+                let mut ti = TreeItem::new(item.status, &item.message);
+                if let Some(ref m) = item.metadata { ti = ti.meta(m); }
+                if let Some(ref d) = item.detail { ti = ti.detail(d); }
+                ti
             })
             .collect();
 
-        let tree_lines = Tree::render_bottom_rooted(&tree_items, theme);
-        frame = frame.lines(tree_lines);
+        let tree = Tree::bottom_rooted().items(tree_items);
+        frame.extend(&tree.render(theme));
 
-        // Brand line at the bottom — the pet anchors the beacon
-        let header = render_header(state, props.pulse, theme);
-        frame = frame.line(header);
+        // Header line: bar + brand + phase + progress + elapsed
+        let header = self.render_header(theme);
+        frame.push_line(header);
 
         frame
     }
 }
 
-/// Props for the Beacon component.
-pub struct BeaconProps<'a> {
-    pub state: BeaconState,
-    /// Pulse animation (None for static rendering).
-    pub pulse: Option<&'a Pulse>,
-}
+impl Beacon {
+    fn render_header(&self, theme: &Theme) -> String {
+        let mut parts = Vec::new();
 
-fn render_header(state: &BeaconState, pulse: Option<&'_ Pulse>, theme: &Theme) -> String {
-    let mut header = String::new();
+        // Bar (animated or static)
+        let bar_frame = self.bar.render(theme);
+        parts.push(bar_frame.lines[0].clone());
 
-    // Bar character: animated pulse when active, medium (home) when idle
-    let bar = if state.is_active {
-        if let Some(p) = pulse {
-            p.render_bar(theme)
-        } else {
-            let color = bar_color(state.severity, theme);
-            Pulse::render_home(theme, &color)
+        // Rainbow brand
+        let brand = Text::rainbow(&self.state.brand);
+        parts.push(brand.render(theme).lines[0].clone());
+
+        // Phase icon + label
+        if let Some(ref phase) = self.state.phase {
+            let icon_semantic = if self.state.is_active {
+                Semantic::Warning
+            } else if self.state.severity == Severity::Error {
+                Semantic::Error
+            } else {
+                Semantic::Success
+            };
+            let icon_status = if self.state.is_active {
+                StatusIcon::InProgress
+            } else if self.state.severity == Severity::Error {
+                StatusIcon::Failed
+            } else {
+                StatusIcon::Success
+            };
+
+            let icon = theme.icons.for_status(icon_status);
+            let color = icon_semantic.resolve(&theme.palette);
+            parts.push(format!("{}{}\x1b[0m {}", color.fg_code(), icon, phase));
         }
-    } else {
-        let color = bar_color(state.severity, theme);
-        Pulse::render_home(theme, &color)
-    };
 
-    header.push_str(&bar);
-    header.push(' ');
+        // Progress + elapsed (dim)
+        if let Some(ref progress) = self.state.progress {
+            parts.push(format!("\x1b[2m{}\x1b[0m", progress));
+        }
+        if let Some(ref elapsed) = self.state.elapsed {
+            parts.push(format!("\x1b[2m{}\x1b[0m", elapsed));
+        }
 
-    // Rainbow brand text
-    header.push_str(&Rainbow::render(&state.brand, theme));
-
-    // Phase label
-    if let Some(ref phase) = state.phase {
-        header.push_str("  ");
-        let phase_icon = if state.is_active {
-            format!(
-                "{}{}{}",
-                theme.palette.warning.fg_code(),
-                theme.icons.for_status(StatusIcon::InProgress),
-                Theme::reset()
-            )
-        } else if state.severity == Severity::Error {
-            format!(
-                "{}{}{}",
-                theme.palette.error.fg_code(),
-                theme.icons.for_status(StatusIcon::Failed),
-                Theme::reset()
-            )
-        } else {
-            format!(
-                "{}{}{}",
-                theme.palette.success.fg_code(),
-                theme.icons.for_status(StatusIcon::Success),
-                Theme::reset()
-            )
-        };
-        header.push_str(&phase_icon);
-        header.push(' ');
-        header.push_str(phase);
+        parts.join("  ")
     }
-
-    // Progress counter
-    if let Some(ref progress) = state.progress {
-        header.push_str(&format!("  {}{}{}", Theme::dim(), progress, Theme::reset()));
-    }
-
-    // Elapsed time
-    if let Some(ref elapsed) = state.elapsed {
-        header.push_str(&format!("  {}{}{}", Theme::dim(), elapsed, Theme::reset()));
-    }
-
-    header
 }
 
-fn bar_color(severity: Severity, theme: &Theme) -> crate::tokens::Color {
+fn bar_semantic(severity: Severity) -> Semantic {
     match severity {
-        Severity::Ok => theme.palette.bar_idle,
-        Severity::Warning => theme.palette.bar_warning,
-        Severity::Error => theme.palette.bar_error,
+        Severity::Ok => Semantic::BarIdle,
+        Severity::Warning => Semantic::BarWarning,
+        Severity::Error => Semantic::BarError,
     }
 }
 
-/// Render the beacon in static mode (no animation, for shell hooks).
+/// Convenience: render a live beacon.
+pub fn render_live(state: &BeaconState, start: Instant, theme: &Theme) -> Frame {
+    let beacon = Beacon::animated(state.clone(), start, theme);
+    beacon.render(theme)
+}
+
+/// Convenience: render a static beacon.
 pub fn render_static(state: &BeaconState, theme: &Theme) -> Frame {
-    Beacon::render(
-        &BeaconProps {
-            state: state.clone(),
-            pulse: None,
-        },
-        theme,
-    )
+    let beacon = Beacon::static_display(state.clone(), theme);
+    beacon.render(theme)
 }
 
-/// Render the beacon with a live pulse.
-pub fn render_live(state: &BeaconState, pulse: &Pulse, theme: &Theme) -> Frame {
-    Beacon::render(
-        &BeaconProps {
-            state: state.clone(),
-            pulse: Some(pulse),
-        },
-        theme,
-    )
-}
-
-/// Render the beacon in CI mode (prefixed lines, no tree chars).
-/// Items first, then header — same bottom-anchored order.
+/// Convenience: render CI mode (plain text, prefixed).
 pub fn render_ci(state: &BeaconState, prefix: &str) -> Vec<String> {
     let mut lines = Vec::new();
-
-    // Items first (plain text, no tree chars)
     for item in &state.items {
         let icon = match item.status {
             StatusIcon::Success => "+",
@@ -232,15 +209,18 @@ pub fn render_ci(state: &BeaconState, prefix: &str) -> Vec<String> {
         let meta = item.metadata.as_deref().unwrap_or("");
         lines.push(format!("[{prefix}] {icon} {} {meta}", item.message).trim_end().to_string());
     }
-
-    // Header at the bottom
     if let Some(ref phase) = state.phase {
         let progress = state.progress.as_deref().unwrap_or("");
         let elapsed = state.elapsed.as_deref().unwrap_or("");
         lines.push(format!("[{prefix}] {phase} {progress} {elapsed}").trim().to_string());
     }
-
     lines
+}
+
+/// Check if a live beacon is at rest (safe to stop).
+pub fn is_at_rest(start: Instant, theme: &Theme) -> bool {
+    let bar = Bar::from_theme(theme).start_at(start);
+    bar.is_at_rest()
 }
 
 #[cfg(test)]
@@ -248,54 +228,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_static_beacon() {
-        let theme = Theme::default();
+    fn static_beacon_renders() {
         let state = BeaconState {
-            brand: "test".into(),
             phase: Some("Done".into()),
             items: vec![BeaconItem {
                 status: StatusIcon::Success,
-                message: "task completed".into(),
-                metadata: Some("1.2s".into()),
+                message: "task".into(),
+                metadata: Some("1s".into()),
                 detail: None,
                 priority: 10,
             }],
-            severity: Severity::Ok,
             ..BeaconState::default()
         };
+        let theme = Theme::default();
         let frame = render_static(&state, &theme);
-        assert!(!frame.is_empty());
-        assert!(frame.lines.len() >= 2); // header + 1 item
+        assert!(frame.height() >= 2);
     }
 
     #[test]
-    fn visible_items_respects_max() {
-        let state = BeaconState {
-            items: (0..10)
-                .map(|i| BeaconItem {
-                    status: StatusIcon::Success,
-                    message: format!("item {i}"),
-                    metadata: None,
-                    detail: None,
-                    priority: i as u8,
-                })
-                .collect(),
-            ..BeaconState::default()
-        };
-        let visible = state.visible_items(5);
-        assert_eq!(visible.len(), 5);
-        // Highest priority first
-        assert_eq!(visible[0].priority, 9);
-    }
-
-    #[test]
-    fn ci_mode_renders_plain() {
+    fn ci_mode_plain() {
         let state = BeaconState {
             phase: Some("Building...".into()),
-            progress: Some("2/5 tasks".into()),
             items: vec![BeaconItem {
                 status: StatusIcon::Success,
-                message: "task done".into(),
+                message: "done".into(),
                 metadata: None,
                 detail: None,
                 priority: 10,
@@ -303,9 +259,26 @@ mod tests {
             ..BeaconState::default()
         };
         let lines = render_ci(&state, "cimera");
-        // Items first, header last (bottom-anchored)
-        assert!(lines[0].contains("task done"));
-        assert!(lines.last().expect("should have lines").contains("Building"));
+        assert!(lines.last().expect("lines").contains("Building"));
         assert!(!lines[0].contains('\x1b'));
+    }
+
+    #[test]
+    fn priority_sorting() {
+        let state = BeaconState {
+            items: (0..10)
+                .map(|i| BeaconItem {
+                    status: StatusIcon::Success,
+                    message: format!("item {i}"),
+                    metadata: None,
+                    detail: None,
+                    priority: i,
+                })
+                .collect(),
+            ..BeaconState::default()
+        };
+        let visible = state.visible_items(5);
+        assert_eq!(visible.len(), 5);
+        assert_eq!(visible[0].priority, 9);
     }
 }

@@ -1,46 +1,51 @@
 //! # peinture
 //!
-//! Terminal UI component library with design tokens, layered rendering,
-//! and nom-style pinned regions.
+//! Declarative terminal UI component library.
+//!
+//! Think **Vue.js + Tailwind** for the terminal:
+//! - Components are structs with trait-based behaviors
+//! - Styling flows from design tokens (Theme) through `Styleable`
+//! - Layout via composable containers (VStack, HStack, Fixed)
+//! - Animations via the `Animate` trait
+//! - Rendering is a pure function: `component.render(&theme) → Frame`
 //!
 //! ## Architecture
 //!
 //! ```text
-//! +--------------------------------------------------+
-//! |                  Application                      |
-//! |  Uses: Beacon, StreamWall, custom components      |
-//! +-------------------+------------------------------+
-//! |                   |                              |
-//! |   Components      |      Layout                  |
-//! |   Beacon          |      VStack / HStack         |
-//! |   Rainbow         |      Fixed / Flex            |
-//! |   Tree            |      Padding / Align         |
-//! |   Pulse           |                              |
-//! +-------------------+------------------------------+
-//! |                                                  |
-//! |              Renderer (Painter)                   |
-//! |   nom-style cursor-up/clear, sync updates,       |
-//! |   layers (stream + pinned), resize handling       |
-//! +--------------------------------------------------+
-//! |                                                  |
-//! |            Design Tokens (Theme)                  |
-//! |   Palette, Spacing, Icons, Component tokens       |
-//! |   Loadable from TOML files                        |
-//! +--------------------------------------------------+
-//! |                                                  |
-//! |          Terminal (console crate)                  |
-//! |   OutputContext, TTY detect, NO_COLOR, resize      |
-//! +--------------------------------------------------+
+//! ┌──────────────────────────────────────────────────┐
+//! │ Application (your code)                          │
+//! │   beacon.render(&theme) → Frame                  │
+//! │   painter.draw(&frame)                           │
+//! ├──────────────────────────────────────────────────┤
+//! │ Components (composable, generic)                 │
+//! │   Text, Bar, Tree, HStack, VStack                │
+//! │   Built via builder pattern, not proc macros     │
+//! ├──────────────────────────────────────────────────┤
+//! │ Traits (behaviors)                               │
+//! │   Render    → produces Frame                     │
+//! │   Animate   → time-based state                   │
+//! │   Styleable → reads Theme tokens                 │
+//! │   Layout    → positions children                 │
+//! ├──────────────────────────────────────────────────┤
+//! │ Tokens (single source of truth)                  │
+//! │   Theme { palette, spacing, icons, tree, ... }   │
+//! │   Semantic colors: success, error, warning       │
+//! │   Loadable from TOML                             │
+//! ├──────────────────────────────────────────────────┤
+//! │ Terminal (low-level output)                       │
+//! │   Painter (nom-style pinned region)              │
+//! │   OutputContext (TTY, NO_COLOR, resize)           │
+//! └──────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use peinture::{Theme, Painter, Beacon, BeaconState};
+//! use peinture::prelude::*;
 //!
 //! let theme = Theme::default();
-//! let mut painter = Painter::new(80, 24);
-//! // ... see examples/ for full usage
+//! let text = Text::new("hello").color(Semantic::Success);
+//! let frame = text.render(&theme);
 //! ```
 
 pub mod component;
@@ -48,9 +53,19 @@ pub mod layout;
 pub mod renderer;
 pub mod terminal;
 pub mod tokens;
+pub mod traits;
 
-// Re-exports for convenience
-pub use component::{Beacon, BeaconItem, BeaconState, Frame};
+/// Prelude — import everything you need with `use peinture::prelude::*`.
+pub mod prelude {
+    pub use crate::component::*;
+    pub use crate::layout::{HStack, VStack};
+    pub use crate::terminal::{OutputContext, Painter};
+    pub use crate::tokens::{Semantic, Theme};
+    pub use crate::traits::{Animate, Render};
+}
+
+// Re-exports for convenience (non-prelude)
+pub use component::{Beacon, BeaconItem, BeaconState};
 pub use renderer::Painter;
 pub use terminal::OutputContext;
 pub use tokens::Theme;

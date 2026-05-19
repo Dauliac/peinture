@@ -1,7 +1,4 @@
 //! Demo: terminal resize detection.
-//!
-//! Prints the terminal size every second for 10 seconds.
-//! Resize your terminal window to see the updates.
 #![allow(clippy::print_stdout)]
 
 use peinture::terminal::OutputContext;
@@ -18,15 +15,10 @@ fn main() {
         ctx.refresh_size();
         println!(
             "[{:2}s] Terminal: {}x{} | TTY: {} | Colors: {} | Animations: {}",
-            i,
-            ctx.term_width,
-            ctx.term_height,
-            ctx.is_tty,
-            ctx.use_colors(),
-            ctx.use_animations(),
+            i, ctx.term_width, ctx.term_height,
+            ctx.is_tty, ctx.use_colors(), ctx.use_animations(),
         );
         thread::sleep(Duration::from_secs(1));
     }
-
     println!("\nDone.");
 }

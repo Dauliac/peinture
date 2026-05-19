@@ -1,120 +1,157 @@
-//! Layout primitives — composing components spatially.
+//! Layout containers — composable positioning of components.
 //!
-//! Inspired by CSS flexbox and SwiftUI stacks:
-//! - **VStack** — vertical stack (components stacked top-to-bottom)
-//! - **HStack** — horizontal stack (components side-by-side)
-//! - **Fixed** — component pinned to a position (bottom, top)
-//! - **Flex** — component that fills available space
+//! Containers implement `Render` and compose child components.
+//!
+//! ```rust,ignore
+//! let layout = VStack::new()
+//!     .child(Text::new("header").bold())
+//!     .child(Text::dim("body"))
+//!     .child(Text::new("footer"));
+//! ```
 
 use crate::component::Frame;
+use crate::tokens::Theme;
+use crate::traits::Render;
 
-/// Vertical stack — concatenate frames top-to-bottom.
-pub fn vstack(frames: &[Frame]) -> Frame {
-    let mut result = Frame::new();
-    for frame in frames {
-        result = result.lines(frame.lines.iter().cloned());
-    }
-    result
+/// Vertical stack — children stacked top-to-bottom.
+pub struct VStack {
+    children: Vec<Box<dyn Render>>,
 }
 
-/// Horizontal stack — place frames side-by-side.
-/// Pads shorter frames with blank lines to match the tallest.
-pub fn hstack(frames: &[Frame], gap: usize) -> Frame {
-    if frames.is_empty() {
-        return Frame::new();
+impl VStack {
+    pub fn new() -> Self {
+        Self { children: Vec::new() }
     }
 
-    let max_height = frames.iter().map(|f| f.height()).max().unwrap_or(0);
-    let gap_str = " ".repeat(gap);
+    /// Add a child component.
+    pub fn child(mut self, child: impl Render + 'static) -> Self {
+        self.children.push(Box::new(child));
+        self
+    }
+}
 
-    // Calculate max visible width for each frame
-    let widths: Vec<usize> = frames
-        .iter()
-        .map(|f| {
-            f.lines
-                .iter()
-                .map(|l| console::measure_text_width(l))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
+impl Default for VStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    let mut result = Frame::new();
-    for row in 0..max_height {
-        let mut line = String::new();
-        for (col, frame) in frames.iter().enumerate() {
-            if col > 0 {
-                line.push_str(&gap_str);
-            }
-            if row < frame.height() {
-                line.push_str(&frame.lines[row]);
-                // Pad to column width for alignment
-                let visible = console::measure_text_width(&frame.lines[row]);
-                if col < frames.len() - 1 && visible < widths[col] {
-                    line.push_str(&" ".repeat(widths[col] - visible));
-                }
-            } else if col < frames.len() - 1 {
-                line.push_str(&" ".repeat(widths[col]));
-            }
+impl Render for VStack {
+    fn render(&self, theme: &Theme) -> Frame {
+        let mut frame = Frame::new();
+        for child in &self.children {
+            frame.extend(&child.render(theme));
         }
-        result = result.line(line);
+        frame
     }
-    result
 }
 
-/// Pad a frame with blank lines to reach a target height.
-pub fn pad_height(frame: &Frame, target_height: usize) -> Frame {
-    let mut result = frame.clone();
-    while result.lines.len() < target_height {
-        result.lines.push(String::new());
+/// Horizontal stack — children placed side-by-side with a gap.
+pub struct HStack {
+    children: Vec<Box<dyn Render>>,
+    gap: usize,
+}
+
+impl HStack {
+    pub fn new() -> Self {
+        Self { children: Vec::new(), gap: 0 }
     }
-    result
+
+    /// Set the gap between children (in characters).
+    pub fn gap(mut self, gap: usize) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// Add a child component.
+    pub fn child(mut self, child: impl Render + 'static) -> Self {
+        self.children.push(Box::new(child));
+        self
+    }
 }
 
-/// Truncate a frame to a maximum height.
-pub fn truncate_height(frame: &Frame, max_height: usize) -> Frame {
-    let mut result = frame.clone();
-    result.lines.truncate(max_height);
-    result
+impl Default for HStack {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-/// Add left padding to each line of a frame.
-pub fn pad_left(frame: &Frame, padding: usize) -> Frame {
-    let pad = " ".repeat(padding);
-    Frame {
-        lines: frame.lines.iter().map(|l| format!("{pad}{l}")).collect(),
+impl Render for HStack {
+    fn render(&self, theme: &Theme) -> Frame {
+        if self.children.is_empty() {
+            return Frame::new();
+        }
+
+        let frames: Vec<Frame> = self.children.iter().map(|c| c.render(theme)).collect();
+        let max_height = frames.iter().map(|f| f.height()).max().unwrap_or(0);
+        let gap_str = " ".repeat(self.gap);
+
+        let widths: Vec<usize> = frames
+            .iter()
+            .map(|f| {
+                f.lines
+                    .iter()
+                    .map(|l| console::measure_text_width(l))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let mut result = Frame::new();
+        for row in 0..max_height {
+            let mut line = String::new();
+            for (col, f) in frames.iter().enumerate() {
+                if col > 0 {
+                    line.push_str(&gap_str);
+                }
+                if row < f.height() {
+                    line.push_str(&f.lines[row]);
+                    let visible = console::measure_text_width(&f.lines[row]);
+                    if col < frames.len() - 1 && visible < widths[col] {
+                        line.push_str(&" ".repeat(widths[col] - visible));
+                    }
+                } else if col < frames.len() - 1 {
+                    line.push_str(&" ".repeat(widths[col]));
+                }
+            }
+            result.push_line(line);
+        }
+        result
+    }
+}
+
+/// Implement Render for Frame itself (pass-through).
+impl Render for Frame {
+    fn render(&self, _theme: &Theme) -> Frame {
+        self.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::component::Text;
 
     #[test]
-    fn vstack_concatenates() {
-        let a = Frame::new().line("line 1".into());
-        let b = Frame::new().line("line 2".into());
-        let result = vstack(&[a, b]);
-        assert_eq!(result.height(), 2);
+    fn vstack_composes() {
+        let theme = Theme::plain();
+        let layout = VStack::new()
+            .child(Text::new("a"))
+            .child(Text::new("b"));
+        let frame = layout.render(&theme);
+        assert_eq!(frame.height(), 2);
     }
 
     #[test]
-    fn hstack_aligns() {
-        let a = Frame::new().line("left".into());
-        let b = Frame::new().line("right".into());
-        let result = hstack(&[a, b], 2);
-        assert_eq!(result.height(), 1);
-        assert!(result.lines[0].contains("left"));
-        assert!(result.lines[0].contains("right"));
-    }
-
-    #[test]
-    fn truncate_limits_height() {
-        let frame = Frame::new()
-            .line("1".into())
-            .line("2".into())
-            .line("3".into());
-        let result = truncate_height(&frame, 2);
-        assert_eq!(result.height(), 2);
+    fn hstack_side_by_side() {
+        let theme = Theme::plain();
+        let layout = HStack::new()
+            .gap(2)
+            .child(Text::new("left"))
+            .child(Text::new("right"));
+        let frame = layout.render(&theme);
+        assert_eq!(frame.height(), 1);
+        assert!(frame.lines[0].contains("left"));
+        assert!(frame.lines[0].contains("right"));
     }
 }
