@@ -82,8 +82,8 @@ impl Pulse {
         }
         let elapsed_ms = self.start.elapsed().as_millis() as u32;
         let phase = (elapsed_ms % tokens.pulse_cycle_ms) as f32 / tokens.pulse_cycle_ms as f32;
-        // Rest phases: 0.88–1.00 and the brief rest at 0.52–0.56
-        phase >= 0.88 || (phase >= 0.52 && phase < 0.56)
+        // Rest phases: 0.88–1.00 and the brief rest at 0.42–0.46
+        phase >= 0.88 || (phase >= 0.42 && phase < 0.46)
     }
 
     /// Milliseconds until the next rest phase.
@@ -96,12 +96,12 @@ impl Pulse {
         let elapsed_ms = self.start.elapsed().as_millis() as u32;
         let phase = (elapsed_ms % tokens.pulse_cycle_ms) as f32 / tokens.pulse_cycle_ms as f32;
 
-        if phase >= 0.88 || (phase >= 0.52 && phase < 0.56) {
+        if phase >= 0.88 || (phase >= 0.42 && phase < 0.46) {
             return 0;
         }
 
-        // Next rest is at 0.88 (end-of-cycle rest)
-        let target = if phase < 0.52 { 0.52 } else { 0.88 };
+        // Next rest point
+        let target = if phase < 0.42 { 0.42 } else { 0.88 };
         let remaining_phase = target - phase;
         (remaining_phase * tokens.pulse_cycle_ms as f32) as u64
     }
@@ -128,35 +128,35 @@ impl Default for Pulse {
 /// Returns continuous displacement from -1.0 to +1.0 (0.0 = home).
 ///
 /// Timing budget (2400ms cycle, 12fps = ~28 frames):
-///   0.00–0.28  expand    home→max       ~8 frames  (ease-out-quad)
-///   0.28–0.52  return    max→home       ~7 frames  (ease-in-quad)
-///   0.52–0.56  rest      home           ~1 frame
-///   0.56–0.72  contract  home→min       ~5 frames  (ease-out-quad, weaker)
-///   0.72–0.88  release   min→home       ~5 frames  (ease-in-quad)
+///   0.00–0.22  expand    home→max       ~6 frames  (ease-out-quad)
+///   0.22–0.42  return    max→home       ~6 frames  (ease-in-quad)
+///   0.42–0.46  rest      home           ~1 frame
+///   0.46–0.68  contract  home→min       ~6 frames  (ease-out-quad, full range)
+///   0.68–0.88  release   min→home       ~6 frames  (ease-in-quad)
 ///   0.88–1.00  rest      home           ~3 frames
 fn heartbeat(phase: f32) -> f32 {
     match phase {
-        // Expand: home → max (ease-out-quad for snappy start)
-        p if p < 0.28 => {
-            let t = p / 0.28;
+        // Expand: home → max
+        p if p < 0.22 => {
+            let t = p / 0.22;
             ease_out_quad(t)
         }
-        // Return: max → home (ease-in-quad for gradual deceleration)
-        p if p < 0.52 => {
-            let t = (p - 0.28) / 0.24;
+        // Return: max → home
+        p if p < 0.42 => {
+            let t = (p - 0.22) / 0.20;
             1.0 - ease_in_quad(t)
         }
         // Brief rest at home
-        p if p < 0.56 => 0.0,
-        // Contract: home → min (softer, only 70% intensity)
-        p if p < 0.72 => {
-            let t = (p - 0.56) / 0.16;
-            -0.7 * ease_out_quad(t)
+        p if p < 0.46 => 0.0,
+        // Contract: home → min (full -1.0 range, same time as expand)
+        p if p < 0.68 => {
+            let t = (p - 0.46) / 0.22;
+            -ease_out_quad(t)
         }
         // Release: min → home
         p if p < 0.88 => {
-            let t = (p - 0.72) / 0.16;
-            -0.7 * (1.0 - ease_in_quad(t))
+            let t = (p - 0.68) / 0.20;
+            -(1.0 - ease_in_quad(t))
         }
         // Rest at home
         _ => 0.0,
@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn heartbeat_returns_to_home() {
-        // Should be near 0 at phase 0.52-0.56
-        assert!(heartbeat(0.54).abs() < 0.05);
+        // Should be near 0 at rest phase 0.42-0.46
+        assert!(heartbeat(0.44).abs() < 0.05);
     }
 
     #[test]
