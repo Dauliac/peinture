@@ -211,15 +211,18 @@ impl Beacon {
     /// Render the header slot — bar + brand + phase + metadata.
     /// Identical for both orientations.
     fn render_header(&self, theme: &Theme) -> String {
-        let mut parts = Vec::new();
+        let mut header = String::new();
 
         // Bar (animated or static)
         let bar_frame = self.bar.render(theme);
-        parts.push(bar_frame.lines[0].clone());
+        header.push_str(&bar_frame.lines[0]);
 
-        // Rainbow brand
+        // Rainbow brand — single space after bar to align with tree icons
+        // Tree: ├─ ✓  (col 0-1: connector, col 2: space, col 3: icon)
+        // Bar:  █  c  (col 0-1: bar,       col 2: space, col 3: brand start)
+        header.push(' ');
         let brand = Text::rainbow(&self.state.brand);
-        parts.push(brand.render(theme).lines[0].clone());
+        header.push_str(&brand.render(theme).lines[0]);
 
         // Phase icon + label
         if let Some(ref phase) = self.state.phase {
@@ -233,18 +236,18 @@ impl Beacon {
 
             let icon = theme.icons.for_status(icon_status);
             let color = icon_semantic.resolve(&theme.palette);
-            parts.push(format!("{}{}\x1b[0m {}", color.fg_code(), icon, phase));
+            header.push_str(&format!("  {}{}\x1b[0m {}", color.fg_code(), icon, phase));
         }
 
         // Progress + elapsed (dim)
         if let Some(ref progress) = self.state.progress {
-            parts.push(format!("\x1b[2m{}\x1b[0m", progress));
+            header.push_str(&format!("  \x1b[2m{}\x1b[0m", progress));
         }
         if let Some(ref elapsed) = self.state.elapsed {
-            parts.push(format!("\x1b[2m{}\x1b[0m", elapsed));
+            header.push_str(&format!("  \x1b[2m{}\x1b[0m", elapsed));
         }
 
-        parts.join("  ")
+        header
     }
 }
 
