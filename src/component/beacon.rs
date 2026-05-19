@@ -91,11 +91,7 @@ impl Component for Beacon {
 
         let mut frame = Frame::new();
 
-        // Header line: bar + brand + phase + progress + elapsed
-        let header = render_header(state, props.pulse.as_ref(), theme);
-        frame = frame.line(header);
-
-        // Tree items
+        // Tree items first (grow upward from the brand line)
         let visible = state.visible_items(max_items);
         let tree_items: Vec<TreeItem> = visible
             .into_iter()
@@ -109,6 +105,10 @@ impl Component for Beacon {
 
         let tree_lines = Tree::render(&tree_items, theme);
         frame = frame.lines(tree_lines);
+
+        // Brand line at the bottom — the pet anchors the beacon
+        let header = render_header(state, props.pulse.as_ref(), theme);
+        frame = frame.line(header);
 
         frame
     }
@@ -206,17 +206,11 @@ pub fn render_static(state: &BeaconState, theme: &Theme) -> Frame {
 }
 
 /// Render the beacon in CI mode (prefixed lines, no tree chars).
+/// Items first, then header — same bottom-anchored order.
 pub fn render_ci(state: &BeaconState, prefix: &str) -> Vec<String> {
     let mut lines = Vec::new();
 
-    // Header
-    if let Some(ref phase) = state.phase {
-        let progress = state.progress.as_deref().unwrap_or("");
-        let elapsed = state.elapsed.as_deref().unwrap_or("");
-        lines.push(format!("[{prefix}] {phase} {progress} {elapsed}").trim().to_string());
-    }
-
-    // Items (plain text, no tree chars)
+    // Items first (plain text, no tree chars)
     for item in &state.items {
         let icon = match item.status {
             StatusIcon::Success => "+",
@@ -227,6 +221,13 @@ pub fn render_ci(state: &BeaconState, prefix: &str) -> Vec<String> {
         };
         let meta = item.metadata.as_deref().unwrap_or("");
         lines.push(format!("[{prefix}] {icon} {} {meta}", item.message).trim_end().to_string());
+    }
+
+    // Header at the bottom
+    if let Some(ref phase) = state.phase {
+        let progress = state.progress.as_deref().unwrap_or("");
+        let elapsed = state.elapsed.as_deref().unwrap_or("");
+        lines.push(format!("[{prefix}] {phase} {progress} {elapsed}").trim().to_string());
     }
 
     lines
@@ -292,7 +293,9 @@ mod tests {
             ..BeaconState::default()
         };
         let lines = render_ci(&state, "cimera");
-        assert!(lines[0].starts_with("[cimera]"));
+        // Items first, header last (bottom-anchored)
+        assert!(lines[0].contains("task done"));
+        assert!(lines.last().expect("should have lines").contains("Building"));
         assert!(!lines[0].contains('\x1b'));
     }
 }
