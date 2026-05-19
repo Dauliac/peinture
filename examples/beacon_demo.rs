@@ -47,9 +47,26 @@ fn main() {
         ..BeaconState::default()
     };
 
+    let crates = [
+        "proc-macro2", "quote", "syn", "serde_derive", "serde", "itoa",
+        "ryu", "serde_json", "libc", "memchr", "tokio-macros", "mio",
+        "socket2", "tokio", "bytes", "http", "httparse", "h2", "hyper",
+        "tower-service", "tower-layer", "tower", "tonic", "prost",
+        "tracing-core", "tracing", "clap_lex", "clap_builder", "clap",
+        "thiserror-impl", "thiserror", "uuid", "chrono", "regex-syntax",
+        "regex-automata", "regex", "base64", "flate2", "rusqlite",
+        "console", "glob", "blake3", "sha2", "rayon-core", "rayon",
+        "notify", "fs2", "futures-core", "futures", "hyper-util",
+    ];
+
     for i in 0..3600 {
-        if i % 3 == 0 && i > 0 {
-            painter.stream_line(format!("  | Compiling dep-{} v0.1.0", i / 3));
+        // Stream fake compilation lines at varied intervals
+        if i % 8 == 0 && i > 0 {
+            let crate_idx = (i / 8) % crates.len();
+            let version = format!("{}.{}.{}", crate_idx / 10, crate_idx % 10, i % 100);
+            painter.stream_line(format!(
+                "   \x1b[32mCompiling\x1b[0m {} v{}", crates[crate_idx], version
+            ));
         }
 
         let frame = beacon::render_live(&state, start, &theme);
