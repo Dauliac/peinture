@@ -7,27 +7,34 @@ use serde::Deserialize;
 pub struct BeaconTokens {
     /// Maximum number of tree items displayed (default: 5).
     pub max_items: usize,
-    /// Render frames per second (default: 5).
+    /// Render frames per second (default: 12).
     pub fps: u8,
-    /// Pulse breathing cycle duration in milliseconds (default: 2000).
+    /// Pulse breathing cycle duration in milliseconds (default: 2400).
     pub pulse_cycle_ms: u32,
-    /// Bar strings for pulse animation: [large, medium, small].
-    /// Each is a multi-char string for centered expansion.
-    /// Default: ["██", "▐▌", "▕▏"]
-    pub bar_frames: [String; 3],
+    /// Bar frames for pulse animation — ordered from smallest to largest.
+    /// Each is a 2-char string for centered expansion.
+    pub bar_frames: Vec<String>,
+    /// Index into `bar_frames` for the resting/home position.
+    pub bar_home_idx: usize,
 }
 
 impl Default for BeaconTokens {
     fn default() -> Self {
         Self {
             max_items: 5,
-            fps: 5,
-            pulse_cycle_ms: 2000,
-            bar_frames: [
-                "\u{2588}\u{2588}".into(),  // ██  full (large, expand)
-                "\u{2590}\u{258C}".into(),  // ▐▌  half (medium, home)
-                "\u{2595}\u{258F}".into(),  // ▕▏  thin (small, contract)
+            fps: 12,
+            pulse_cycle_ms: 2400,
+            // 7 centered stages — capped at ▐▉ (no full blocks)
+            bar_frames: vec![
+                "\u{2595}\u{258F}".into(),  // ▕▏  0  thinnest
+                "\u{2595}\u{258E}".into(),  // ▕▎  1
+                "\u{2595}\u{258D}".into(),  // ▕▍  2
+                "\u{2590}\u{258C}".into(),  // ▐▌  3  HOME
+                "\u{2590}\u{258B}".into(),  // ▐▋  4
+                "\u{2590}\u{258A}".into(),  // ▐▊  5
+                "\u{2590}\u{2589}".into(),  // ▐▉  6  largest
             ],
+            bar_home_idx: 3,
         }
     }
 }
@@ -38,6 +45,27 @@ impl BeaconTokens {
         if self.fps == 0 { return 200; }
         1000 / self.fps as u64
     }
+
+    /// The home/resting bar frame.
+    pub fn home_frame(&self) -> &str {
+        &self.bar_frames[self.bar_home_idx]
+    }
+
+    /// Map a displacement value (-1.0..+1.0) to a bar frame.
+    /// 0.0 = home, +1.0 = largest, -1.0 = smallest.
+    pub fn frame_for_displacement(&self, displacement: f32) -> &str {
+        let home = self.bar_home_idx as f32;
+        let max_idx = (self.bar_frames.len() - 1) as f32;
+
+        let idx = if displacement >= 0.0 {
+            home + displacement * (max_idx - home)
+        } else {
+            home + displacement * home
+        };
+
+        let idx = idx.round().clamp(0.0, max_idx) as usize;
+        &self.bar_frames[idx]
+    }
 }
 
 #[cfg(test)]
@@ -47,14 +75,30 @@ mod tests {
     #[test]
     fn frame_interval() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_interval_ms(), 200); // 1000/5 = 200ms
+        assert_eq!(t.frame_interval_ms(), 83); // 1000/12
     }
 
     #[test]
-    fn default_bar_frames() {
+    fn home_frame_is_medium() {
         let t = BeaconTokens::default();
-        assert_eq!(t.bar_frames[0], "██");
-        assert_eq!(t.bar_frames[1], "▐▌");
-        assert_eq!(t.bar_frames[2], "▕▏");
+        assert_eq!(t.home_frame(), "\u{2590}\u{258C}"); // ▐▌
+    }
+
+    #[test]
+    fn displacement_zero_is_home() {
+        let t = BeaconTokens::default();
+        assert_eq!(t.frame_for_displacement(0.0), t.home_frame());
+    }
+
+    #[test]
+    fn displacement_max_is_largest() {
+        let t = BeaconTokens::default();
+        assert_eq!(t.frame_for_displacement(1.0), "\u{2590}\u{2589}"); // ▐▉
+    }
+
+    #[test]
+    fn displacement_min_is_smallest() {
+        let t = BeaconTokens::default();
+        assert_eq!(t.frame_for_displacement(-1.0), "\u{2595}\u{258F}"); // ▕▏
     }
 }
