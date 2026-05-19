@@ -9,7 +9,7 @@ pub struct BeaconTokens {
     pub max_items: usize,
     /// Render frames per second (default: 12).
     pub fps: u8,
-    /// Pulse breathing cycle duration in milliseconds (default: 2400).
+    /// Pulse breathing cycle duration in milliseconds (default: 3200).
     pub pulse_cycle_ms: u32,
     /// Bar frames for pulse animation — ordered from smallest to largest.
     /// Each is a 2-char string for centered expansion.
@@ -23,7 +23,7 @@ impl Default for BeaconTokens {
         Self {
             max_items: 5,
             fps: 12,
-            pulse_cycle_ms: 2400,
+            pulse_cycle_ms: 3200,
             // 7 centered stages — capped at ▐▉ (no full blocks)
             bar_frames: vec![
                 "\u{2595}\u{258F}".into(),  // ▕▏  0  thinnest
