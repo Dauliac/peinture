@@ -24,15 +24,12 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 12,
             pulse_cycle_ms: 3200,
-            // 7 stages — ▐▌ is minimum/home, expands up to ██
+            // 3 stages — right-aligned, pulse expands to the LEFT
+            // Right edge stays fixed, growth fills leftward
             bar_frames: vec![
-                "\u{2590}\u{258C}".into(),  // ▐▌  0  HOME (minimum, matches tree)
-                "\u{2590}\u{258B}".into(),  // ▐▋  1
-                "\u{2590}\u{258A}".into(),  // ▐▊  2
-                "\u{2590}\u{2589}".into(),  // ▐▉  3
-                "\u{2588}\u{258A}".into(),  // █▊  4
-                "\u{2588}\u{2589}".into(),  // █▉  5
-                "\u{2588}\u{2588}".into(),  // ██  6  largest
+                "\u{2595}".into(),  // ▕  0  HOME (right 1/8, thin)
+                "\u{2590}".into(),  // ▐  1  (right 1/2)
+                "\u{2588}".into(),  // █  2  PEAK (full block)
             ],
             bar_home_idx: 0,
         }
@@ -79,9 +76,9 @@ mod tests {
     }
 
     #[test]
-    fn home_frame_is_medium() {
+    fn home_frame_is_right_eighth() {
         let t = BeaconTokens::default();
-        assert_eq!(t.home_frame(), "\u{2590}\u{258C}"); // ▐▌
+        assert_eq!(t.home_frame(), "\u{2595}"); // ▕
     }
 
     #[test]
@@ -91,9 +88,9 @@ mod tests {
     }
 
     #[test]
-    fn displacement_max_is_largest() {
+    fn displacement_max_is_full_block() {
         let t = BeaconTokens::default();
-        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}\u{2588}"); // ██
+        assert_eq!(t.frame_for_displacement(1.0), "\u{2588}"); // █
     }
 
     #[test]
