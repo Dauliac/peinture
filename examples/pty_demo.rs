@@ -14,7 +14,7 @@
 //!   cargo run --features pty --example pty_demo -- watch -n1 date
 #![allow(clippy::print_stderr, clippy::print_stdout, clippy::unwrap_used)]
 
-use peinture::component::beacon::{self, BeaconState, Severity};
+use peinture::component::beacon::{self, BeaconState, ItemKind, Severity};
 use peinture::component::BeaconItem;
 use peinture::terminal::OutputContext;
 use peinture::terminal::painter::Painter;
@@ -71,7 +71,7 @@ fn main() {
             message: cmd_display.clone(),
             metadata: None,
             detail: None,
-            priority: 10,
+            kind: ItemKind::Workload,
         }],
         ..BeaconState::default()
     };
@@ -113,7 +113,7 @@ fn main() {
     loop {
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
         let frame = beacon::render_live(&state, start, &theme);
-        painter.render_frame(&frame);
+        painter.render_frame(&frame.lines);
         thread::sleep(Duration::from_millis(theme.beacon.frame_interval_ms()));
         if beacon::is_at_rest(start, &theme) {
             break;

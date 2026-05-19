@@ -21,7 +21,7 @@ use crate::component::tree::{Tree, TreeItem, TreeRoot};
 use crate::tokens::icons::StatusIcon;
 use crate::tokens::{Semantic, Theme};
 use crate::traits::{Animate, Render};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Orientation
@@ -77,6 +77,8 @@ pub struct BeaconItem {
     pub metadata: Option<String>,
     pub detail: Option<String>,
     pub kind: ItemKind,
+    /// When this item was created (for TTL/fade on notifications).
+    pub created_at: Instant,
 }
 
 impl BeaconItem {
@@ -88,6 +90,7 @@ impl BeaconItem {
             metadata: None,
             detail: None,
             kind: ItemKind::Notification,
+            created_at: Instant::now(),
         }
     }
 
@@ -99,7 +102,32 @@ impl BeaconItem {
             metadata: None,
             detail: None,
             kind: ItemKind::Workload,
+            created_at: Instant::now(),
         }
+    }
+
+    /// Age of this item since creation.
+    pub fn age(&self) -> Duration {
+        self.created_at.elapsed()
+    }
+
+    /// Fade factor: 0.0 = full color, 1.0 = fully faded.
+    /// Returns None for workload items (they never fade).
+    pub fn fade(&self, ttl_ms: u64, fade_start: f32) -> f32 {
+        if self.kind == ItemKind::Workload {
+            return 0.0;
+        }
+        let age_ms = self.age().as_millis() as f64;
+        let ttl = ttl_ms as f64;
+        if age_ms >= ttl {
+            return 1.0;
+        }
+        let fade_begin = ttl * fade_start as f64;
+        if age_ms <= fade_begin {
+            return 0.0;
+        }
+        // Linear fade from fade_start to TTL
+        ((age_ms - fade_begin) / (ttl - fade_begin)) as f32
     }
 
     /// Add right-aligned metadata.
@@ -149,6 +177,16 @@ impl BeaconState {
     pub fn push_notification(&mut self, item: BeaconItem) {
         self.items.push(item);
         self.trim_notifications();
+    }
+
+    /// Remove notifications that have exceeded their TTL.
+    pub fn gc_expired(&mut self, ttl_ms: u64) {
+        self.items.retain(|item| {
+            if item.kind != ItemKind::Notification {
+                return true; // keep workload items
+            }
+            (item.age().as_millis() as u64) < ttl_ms
+        });
     }
 
     /// Set or replace the current workload item.
@@ -262,6 +300,8 @@ impl Render for Beacon {
 impl Beacon {
     fn render_tree(&self, theme: &Theme) -> Frame {
         let ordered = self.state.render_items();
+        let ttl_ms = theme.beacon.notification_ttl_ms;
+        let fade_start = theme.beacon.notification_fade_start;
 
         let tree_items: Vec<TreeItem> = ordered
             .into_iter()
@@ -269,9 +309,13 @@ impl Beacon {
                 let mut ti = TreeItem::new(item.status, &item.message);
                 if let Some(ref m) = item.metadata { ti = ti.meta(m); }
                 if let Some(ref d) = item.detail { ti = ti.detail(d); }
-                // Workload items are rendered in yellow (override status color)
                 if item.kind == ItemKind::Workload {
                     ti = ti.color_override(Semantic::Warning);
+                }
+                // Apply fade for aging notifications
+                let f = item.fade(ttl_ms, fade_start);
+                if f > 0.0 {
+                    ti = ti.fade(f);
                 }
                 ti
             })
@@ -328,7 +372,9 @@ fn bar_semantic(severity: Severity) -> Semantic {
 // ─────────────────────────────────────────────────────────────────────────
 
 pub fn render_live(state: &BeaconState, start: Instant, theme: &Theme) -> Frame {
-    Beacon::animated(state.clone(), start, theme).render(theme)
+    let mut s = state.clone();
+    s.gc_expired(theme.beacon.notification_ttl_ms);
+    Beacon::animated(s, start, theme).render(theme)
 }
 
 pub fn render_live_oriented(state: &BeaconState, start: Instant, theme: &Theme, orientation: Orientation) -> Frame {

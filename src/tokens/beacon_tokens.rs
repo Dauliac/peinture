@@ -9,8 +9,13 @@ pub struct BeaconTokens {
     pub max_items: usize,
     /// Render frames per second (default: 12).
     pub fps: u8,
-    /// Pulse breathing cycle duration in milliseconds (default: 3200).
+    /// Pulse breathing cycle duration in milliseconds (default: 2200).
     pub pulse_cycle_ms: u32,
+    /// Notification time-to-live in milliseconds (default: 10000 = 10s).
+    /// After this, the notification is removed.
+    pub notification_ttl_ms: u64,
+    /// Fraction of TTL at which fade starts (default: 0.6 = fade begins at 60% of TTL).
+    pub notification_fade_start: f32,
     /// Bar frames for pulse animation — ordered from smallest to largest.
     /// Each is a 2-char string for centered expansion.
     pub bar_frames: Vec<String>,
@@ -24,6 +29,8 @@ impl Default for BeaconTokens {
             max_items: 5,
             fps: 12,
             pulse_cycle_ms: 2200,
+            notification_ttl_ms: 8_000,
+            notification_fade_start: 0.4,
             // 5 stages — left column is always █ (matches ├ width)
             // Pulse expands RIGHT into the second column
             // Left edge perfectly aligned with tree connectors

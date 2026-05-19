@@ -32,6 +32,11 @@ fn main() {
         return;
     }
 
+    // Shorter TTL for demo so fading is clearly visible
+    let mut theme = theme;
+    theme.beacon.notification_ttl_ms = 4_000;
+    theme.beacon.notification_fade_start = 0.3;
+
     let mut painter = Painter::new(ctx.term_width, ctx.term_height);
     painter.hide_cursor();
     let start = Instant::now();

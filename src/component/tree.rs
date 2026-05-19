@@ -22,6 +22,8 @@ pub struct TreeItem {
     pub detail: Option<String>,
     /// Override the color (ignores status-based color). Used for workload items.
     pub color_override: Option<Semantic>,
+    /// Fade factor: 0.0 = full color, 1.0 = fully dim. Used for aging notifications.
+    pub fade_factor: f32,
 }
 
 impl TreeItem {
@@ -33,6 +35,7 @@ impl TreeItem {
             metadata: None,
             detail: None,
             color_override: None,
+            fade_factor: 0.0,
         }
     }
 
@@ -51,6 +54,12 @@ impl TreeItem {
     /// Override the color for this item (e.g., yellow for workload).
     pub fn color_override(mut self, semantic: Semantic) -> Self {
         self.color_override = Some(semantic);
+        self
+    }
+
+    /// Set the fade factor (0.0 = full color, 1.0 = fully dim).
+    pub fn fade(mut self, fade: f32) -> Self {
+        self.fade_factor = fade;
         self
     }
 }
@@ -123,7 +132,14 @@ impl Render for Tree {
 
             let icon = theme.icons.for_status(item.status);
             let semantic = item.color_override.unwrap_or_else(|| semantic_for_status(item.status));
-            let icon_color = semantic.resolve(&theme.palette);
+            let base_color = semantic.resolve(&theme.palette);
+            // Apply fade: lerp toward muted as fade_factor increases
+            let muted = theme.palette.muted;
+            let icon_color = if item.fade_factor > 0.0 {
+                base_color.lerp(&muted, item.fade_factor)
+            } else {
+                base_color
+            };
             let msg_color = icon_color;
 
             let main = if let Some(ref meta) = item.metadata {

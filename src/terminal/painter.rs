@@ -83,10 +83,9 @@ impl Painter {
         if !self.stream_buffer.is_empty() {
             let drained: Vec<String> = self.stream_buffer.drain(..).collect();
 
-            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
-
             for line in &drained {
-                buf.push_str(&format!("\n\x1b[2K{line}"));
+                // Move to last row, scroll up with \n, clear line, write content
+                buf.push_str(&format!("\x1b[{scroll_bottom};1H\n\x1b[2K{line}"));
             }
         }
 
