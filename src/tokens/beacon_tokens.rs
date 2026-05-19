@@ -22,9 +22,9 @@ impl Default for BeaconTokens {
             fps: 5,
             pulse_cycle_ms: 2000,
             bar_chars: [
-                '\u{258E}', // left 1/4 block (thick, resting)
-                '\u{258D}', // left 3/8 block (medium)
-                '\u{258F}', // left 1/8 block (thin, peak)
+                '\u{258A}', // left 3/4 block (chunky, resting)
+                '\u{258C}', // left 1/2 block (medium)
+                '\u{258E}', // left 1/4 block (thin, peak)
             ],
         }
     }
@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn default_bar_chars() {
         let t = BeaconTokens::default();
-        assert_eq!(t.bar_chars[0], '\u{258E}');
-        assert_eq!(t.bar_chars[2], '\u{258F}');
+        assert_eq!(t.bar_chars[0], '\u{258A}');
+        assert_eq!(t.bar_chars[2], '\u{258E}');
     }
 }
