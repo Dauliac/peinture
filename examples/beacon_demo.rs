@@ -47,26 +47,43 @@ fn main() {
         ..BeaconState::default()
     };
 
-    let crates = [
-        "proc-macro2", "quote", "syn", "serde_derive", "serde", "itoa",
-        "ryu", "serde_json", "libc", "memchr", "tokio-macros", "mio",
-        "socket2", "tokio", "bytes", "http", "httparse", "h2", "hyper",
-        "tower-service", "tower-layer", "tower", "tonic", "prost",
-        "tracing-core", "tracing", "clap_lex", "clap_builder", "clap",
-        "thiserror-impl", "thiserror", "uuid", "chrono", "regex-syntax",
-        "regex-automata", "regex", "base64", "flate2", "rusqlite",
-        "console", "glob", "blake3", "sha2", "rayon-core", "rayon",
-        "notify", "fs2", "futures-core", "futures", "hyper-util",
+    let log_lines = [
+        "copying path '/nix/store/abc123-source' to remote host...",
+        "building '/nix/store/def456-myservice-deps-0.1.0.drv'...",
+        "unpacking sources",
+        "patching sources",
+        "configuring",
+        "no configure script, doing nothing",
+        "building",
+        "running build phase",
+        "installing",
+        "post-installation fixup",
+        "shrinking RPATHs of ELF executables and libraries",
+        "checking for references to /build/ in /nix/store/...",
+        "patching script interpreter paths",
+        "stripping (with command strip and target flags -S -p)",
+        "building '/nix/store/ghi789-myservice-0.1.0.drv'...",
+        "running tests",
+        "test result: ok. 42 passed; 0 failed; 0 ignored",
+        "building '/nix/store/jkl012-cli-tools-0.1.0.drv'...",
+        "copying path '/nix/store/mno345-myservice-0.1.0' to binary cache...",
+        "evaluating attribute 'packages.x86_64-linux.myservice'",
+        "querying info about missing paths...",
+        "downloading 'https://cache.nixos.org/nar/abc123.nar.xz'...",
+        "copying 12 paths, 48.2 MiB total",
+        "substituting '/nix/store/pqr678-glibc-2.39'...",
+        "fetching store path '/nix/store/stu901-openssl-3.3.1'...",
+        "building '/nix/store/vwx234-python3-3.12.4.drv'...",
+        "running install phase",
+        "running fixup phase",
+        "gzip: /nix/store/yza567-docs compressed 64.2%",
+        "running post-install hooks",
     ];
 
     for i in 0..3600 {
-        // Stream fake compilation lines at varied intervals
-        if i % 8 == 0 && i > 0 {
-            let crate_idx = (i / 8) % crates.len();
-            let version = format!("{}.{}.{}", crate_idx / 10, crate_idx % 10, i % 100);
-            painter.stream_line(format!(
-                "   \x1b[32mCompiling\x1b[0m {} v{}", crates[crate_idx], version
-            ));
+        if i % 10 == 0 && i > 0 {
+            let line_idx = (i / 10) % log_lines.len();
+            painter.stream_line(format!("  {}", log_lines[line_idx]));
         }
 
         let frame = beacon::render_live(&state, start, &theme);

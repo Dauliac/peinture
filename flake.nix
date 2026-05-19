@@ -80,6 +80,7 @@
             cargo-watch
             cargo-machete
             bacon
+            nix-output-monitor
           ];
         };
       };
