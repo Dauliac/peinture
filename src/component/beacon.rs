@@ -217,10 +217,7 @@ impl Beacon {
         let bar_frame = self.bar.render(theme);
         header.push_str(&bar_frame.lines[0]);
 
-        // Rainbow brand — single space after bar to align with tree icons
-        // Tree: ├─ ✓  (col 0-1: connector, col 2: space, col 3: icon)
-        // Bar:  █  c  (col 0-1: bar,       col 2: space, col 3: brand start)
-        header.push(' ');
+        // Rainbow brand — no gap, bar runs directly into brand text
         let brand = Text::rainbow(&self.state.brand);
         header.push_str(&brand.render(theme).lines[0]);
 
