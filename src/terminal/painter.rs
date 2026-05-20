@@ -72,23 +72,23 @@ impl Painter {
 
         // ── Phase 2: Write stream lines (become scrollback, not tracked) ──
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
-        for line in &drained {
-            buf.extend_from_slice(b"\n");        // PrintNewLine
-            buf.extend_from_slice(line.as_bytes());
+        let has_stream = !drained.is_empty();
+        for (i, line) in drained.iter().enumerate() {
+            if i == 0 && self.printed_lines > 0 {
+                // First stream line after erased beacon: cursor is on the
+                // first cleared line. Write here, then \n for subsequent.
+                buf.extend_from_slice(line.as_bytes());
+            } else {
+                buf.extend_from_slice(b"\n");
+                buf.extend_from_slice(line.as_bytes());
+            }
         }
 
         // ── Phase 3: Write beacon lines ──
         for (i, line) in beacon_lines.iter().enumerate() {
-            if i == 0 && self.printed_lines == 0 && drained.is_empty() {
-                // Very first frame, no previous output — just write
-            } else if i == 0 && !drained.is_empty() {
-                // Stream was just printed, beacon follows on next line
-                buf.extend_from_slice(b"\n");
-            } else if i == 0 {
-                // No stream, but previous beacon was erased — cursor is at first line
-                // StayInLine (already at the right position)
+            if i == 0 && self.printed_lines == 0 && !has_stream {
+                // Very first frame ever — just write
             } else {
-                // Subsequent beacon lines
                 buf.extend_from_slice(b"\n");
             }
             buf.extend_from_slice(line.as_bytes());
