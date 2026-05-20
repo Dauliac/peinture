@@ -1,15 +1,12 @@
 //! Demo: capture a screen-rewriting program via PTY and overlay a peinture
 //! beacon below it using a scroll region.
 //!
-//! nom's raw output is relayed directly into a DECSTBM scroll region.
-//! The beacon is drawn below the scroll region via absolute positioning.
-//! When content scrolls off the top, it goes into real terminal scrollback.
+//! The virtual terminal starts small and grows reactively as the captured
+//! program fills it. This pushes the beacon down organically — just like
+//! `beacon_demo` where stream lines push the beacon to the bottom.
 //!
-//! Layout:
-//!   ─── top of terminal ───
-//!   scroll region (rows 1 to N)   ← nom's raw output relayed here
-//!   beacon (rows N+1 to bottom)   ← redrawn each frame via save/restore cursor
-//!   ─── bottom of terminal ───
+//! Once the virtual terminal reaches full size, content scrolls naturally
+//! into real terminal scrollback.
 //!
 //! Usage:
 //!   cargo run --features pty --example pty_demo -- <command> [args...]
@@ -69,12 +66,12 @@ fn main() {
         .lines
         .len() as u16;
 
-    // Scroll region = rows 1..scroll_bottom. Beacon lives below.
-    let scroll_bottom = ctx.term_height.saturating_sub(beacon_height);
-    let capture_rows = scroll_bottom.max(4);
+    let max_capture_rows = ctx.term_height.saturating_sub(beacon_height).max(4);
+    // Start at 1 row — the PTY grows as the program fills it.
+    let mut current_rows: u16 = 1;
 
     let str_args: Vec<&str> = args[1..].iter().map(|s| s.as_str()).collect();
-    let mut capture = PtyCapture::spawn(&args[0], &str_args, capture_rows, ctx.term_width)
+    let mut capture = PtyCapture::spawn(&args[0], &str_args, current_rows, ctx.term_width)
         .unwrap_or_else(|e| {
             eprintln!("Failed to spawn '{}': {e}", args[0]);
             std::process::exit(1);
@@ -82,9 +79,9 @@ fn main() {
 
     let mut stderr = std::io::stderr();
 
-    // Hide cursor, set scroll region, position cursor at top.
+    // Hide cursor, set initial scroll region, position cursor at top.
     let _ = stderr.write_all(
-        format!("\x1b[?25l\x1b[1;{scroll_bottom}r\x1b[1;1H").as_bytes(),
+        format!("\x1b[?25l\x1b[1;{current_rows}r\x1b[1;1H").as_bytes(),
     );
     let _ = stderr.flush();
     install_cleanup_hook();
@@ -101,30 +98,37 @@ fn main() {
             let _ = stderr.flush();
         }
 
-        // Handle terminal resize.
-        let prev_width = ctx.term_width;
-        let prev_height = ctx.term_height;
-        ctx.refresh_size();
-        if ctx.term_width != prev_width || ctx.term_height != prev_height {
-            let new_scroll_bottom = ctx.term_height.saturating_sub(beacon_height);
-            let new_capture_rows = new_scroll_bottom.max(4);
-            capture.resize(new_capture_rows, ctx.term_width);
-            // Update scroll region.
+        // Grow the virtual terminal when the program needs more space.
+        if capture.needs_grow() && current_rows < max_capture_rows {
+            // Grow by a few rows to reduce SIGWINCH frequency.
+            let new_rows = (current_rows + 4).min(max_capture_rows);
+            current_rows = new_rows;
+            capture.resize(current_rows, ctx.term_width);
+            // Expand scroll region to match.
             let _ = stderr.write_all(
-                format!("\x1b[1;{new_scroll_bottom}r").as_bytes(),
+                format!("\x1b[1;{current_rows}r").as_bytes(),
             );
             let _ = stderr.flush();
         }
 
-        // Draw beacon below the scroll region (save/restore cursor so
-        // nom's cursor position is preserved).
+        // Handle real terminal resize.
+        let prev_width = ctx.term_width;
+        let prev_height = ctx.term_height;
+        ctx.refresh_size();
+        if ctx.term_width != prev_width || ctx.term_height != prev_height {
+            let new_max = ctx.term_height.saturating_sub(beacon_height).max(4);
+            current_rows = current_rows.min(new_max);
+            capture.resize(current_rows, ctx.term_width);
+            let _ = stderr.write_all(
+                format!("\x1b[1;{current_rows}r").as_bytes(),
+            );
+            let _ = stderr.flush();
+        }
+
+        // Draw beacon below the scroll region.
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
         let beacon_frame = beacon::render_live(&state, start, &theme);
-        draw_beacon(
-            &beacon_frame.lines,
-            ctx.term_height.saturating_sub(beacon_height),
-            ctx.term_height,
-        );
+        draw_beacon(&beacon_frame.lines, current_rows, ctx.term_height);
 
         if !running {
             break;
@@ -141,33 +145,24 @@ fn main() {
             .meta(format!("{:.1}s", start.elapsed().as_secs_f64())),
     );
 
-    // Let pulse finish.
     loop {
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
         let beacon_frame = beacon::render_live(&state, start, &theme);
-        draw_beacon(
-            &beacon_frame.lines,
-            ctx.term_height.saturating_sub(beacon_height),
-            ctx.term_height,
-        );
+        draw_beacon(&beacon_frame.lines, current_rows, ctx.term_height);
         thread::sleep(Duration::from_millis(frame_ms));
         if beacon::is_at_rest(start, &theme) {
             break;
         }
     }
 
-    // ─── Final: reset scroll region, clear beacon area, print static ─────
+    // ─── Final: reset scroll region, print static beacon ─────────────────
     state.is_active = false;
     let frame = beacon::render_static(&state, &theme);
 
     let mut buf = String::new();
-    // Reset scroll region, move below last nom output, show cursor.
-    buf.push_str("\x1b[r");
-    // Move to the row after the scroll region to print final beacon.
-    let final_row = ctx.term_height.saturating_sub(beacon_height) + 1;
-    buf.push_str(&format!("\x1b[{final_row};1H"));
-    // Clear from here to bottom.
-    buf.push_str("\x1b[J");
+    buf.push_str("\x1b[r"); // reset scroll region
+    let final_row = current_rows + 1;
+    buf.push_str(&format!("\x1b[{final_row};1H\x1b[J")); // move below nom, clear rest
     for line in &frame.lines {
         buf.push_str(line);
         buf.push('\n');
@@ -178,7 +173,6 @@ fn main() {
 }
 
 /// Draw beacon below the scroll region using save/restore cursor.
-/// This preserves nom's cursor position so its output isn't disrupted.
 fn draw_beacon(lines: &[String], scroll_bottom: u16, term_height: u16) {
     let mut buf = String::with_capacity(2048);
     buf.push_str("\x1b[?2026h"); // sync begin
@@ -191,6 +185,11 @@ fn draw_beacon(lines: &[String], scroll_bottom: u16, term_height: u16) {
             break;
         }
         buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
+    }
+    // Clear any leftover rows between beacon and bottom.
+    let beacon_end = beacon_start + lines.len() as u16;
+    for row in beacon_end..=term_height {
+        buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
     }
 
     buf.push_str("\x1b8");       // restore cursor (DECRC)
@@ -220,7 +219,6 @@ fn beacon_probe_state(theme: &Theme) -> BeaconState {
 
 fn install_cleanup_hook() {
     let _ = ctrlc::set_handler(move || {
-        // Reset scroll region + show cursor.
         let _ = std::io::stderr().write_all(b"\x1b[r\x1b[?25h");
         let _ = std::io::stderr().flush();
         std::process::exit(130);

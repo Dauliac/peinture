@@ -262,6 +262,22 @@ impl PtyCapture {
         Ok(status)
     }
 
+    /// Current cursor row in the virtual terminal (0-based).
+    pub fn cursor_row(&self) -> u16 {
+        self.parser.screen().cursor_position().0
+    }
+
+    /// Returns `true` if the program needs more rows.
+    ///
+    /// Checks whether the cursor is near the bottom of the virtual
+    /// terminal or the content has filled the available space.
+    pub fn needs_grow(&self) -> bool {
+        let cursor_row = self.cursor_row();
+        let active = self.active_rows() as u16;
+        // Cursor at last row, or content fills the screen.
+        cursor_row + 1 >= self.rows || active >= self.rows
+    }
+
     /// Virtual screen rows.
     pub fn rows(&self) -> u16 {
         self.rows

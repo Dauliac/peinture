@@ -96,23 +96,18 @@ impl Painter {
     }
 
     /// Phase 1: beacon follows content, no scroll region.
+    ///
+    /// Uses `\x1b[L` (Insert Line) to add stream lines ABOVE the beacon
+    /// without overwriting it. The beacon is pushed down naturally.
+    /// No blink because the beacon content is never erased — only shifted.
     fn render_filling(&mut self, pinned_lines: &[String], new_height: u16) {
-        let beacon_growing = pinned_lines.len() > self.pinned_line_count;
-
-        // When beacon grows: DON'T flush stream this frame.
-        // Stream lines overwrite the first beacon line (notification),
-        // causing a visible flash. Let the beacon grow cleanly first,
-        // stream flushes on the next frame.
-        let flushed: Vec<String> = if beacon_growing {
-            Vec::new()
-        } else {
-            let overflow = self.buffer.len().saturating_sub(self.reserve);
-            let to_flush = overflow.min(self.buffer.len());
-            let tw = self.term_width;
-            self.buffer.drain(..to_flush)
-                .map(|l| truncate_line(&l, tw))
-                .collect()
-        };
+        // Flush overflow from buffer
+        let overflow = self.buffer.len().saturating_sub(self.reserve);
+        let to_flush = overflow.min(self.buffer.len());
+        let tw = self.term_width;
+        let flushed: Vec<String> = self.buffer.drain(..to_flush)
+            .map(|l| truncate_line(&l, tw))
+            .collect();
 
         let mut buf = Vec::<u8>::with_capacity(4096);
         buf.extend_from_slice(SYNC_BEGIN.as_bytes());
@@ -124,14 +119,20 @@ impl Painter {
             buf.extend_from_slice(b"\r");
         }
 
-        // Write stream lines (push beacon down)
+        // INSERT stream lines above beacon using \x1b[L (Insert Line).
+        // Each \x1b[L inserts a blank line at cursor, pushing beacon DOWN.
+        // Then we write the stream content on that line.
+        // The beacon is NEVER overwritten — just shifted. No blink.
         for line in &flushed {
+            buf.extend_from_slice(b"\x1b[L");  // insert blank line, beacon pushed down
             buf.extend_from_slice(line.as_bytes());
-            buf.extend_from_slice(b"\x1b[K\n");
+            buf.extend_from_slice(b"\x1b[K");  // clear rest of line
+            buf.extend_from_slice(b"\n");       // move to next line
             self.stream_lines_total += 1;
         }
 
-        // Write beacon lines (overwrite old beacon position)
+        // Now cursor is at the first beacon line (which was pushed down).
+        // Overwrite beacon lines in place (for animation updates).
         for (i, line) in pinned_lines.iter().enumerate() {
             buf.extend_from_slice(line.as_bytes());
             buf.extend_from_slice(b"\x1b[K");
@@ -147,10 +148,9 @@ impl Painter {
 
         self.pinned_line_count = pinned_lines.len();
 
-        // Transition to Pinned ASAP — as soon as we have stream content
-        // or beacon grows beyond 1 line. Scroll regions don't blink.
-        // Nom-style overwrite blinks on terminals without sync update support.
-        if self.stream_lines_total > 0 || self.pinned_line_count > 1 {
+        // Transition to Pinned when screen is full
+        let total = self.stream_lines_total + self.pinned_line_count;
+        if total >= self.term_height as usize {
             self.transition_to_pinned(new_height);
         }
     }
