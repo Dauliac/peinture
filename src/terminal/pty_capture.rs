@@ -116,21 +116,35 @@ impl PtyCapture {
     ///
     /// Returns `true` if the child process is still running.
     pub fn process_available(&mut self) -> bool {
+        self.process_available_raw().0
+    }
+
+    /// Drain available PTY output, feed it to the virtual terminal, and
+    /// return the raw bytes for direct relay to the real terminal.
+    ///
+    /// Use this when you want to relay the captured program's output
+    /// directly (e.g. into a scroll region) while still keeping the
+    /// vt100 screen state up to date.
+    ///
+    /// Returns `(still_running, raw_bytes)`.
+    pub fn process_available_raw(&mut self) -> (bool, Vec<u8>) {
+        let mut raw = Vec::new();
         while let Ok(bytes) = self.rx.try_recv() {
+            raw.extend_from_slice(&bytes);
             self.parser.process(&bytes);
         }
 
         if !self.finished {
             if let Ok(Some(_)) = self.child.try_wait() {
-                // Drain any remaining bytes after child exits.
                 while let Ok(bytes) = self.rx.try_recv() {
+                    raw.extend_from_slice(&bytes);
                     self.parser.process(&bytes);
                 }
                 self.finished = true;
             }
         }
 
-        !self.finished
+        (!self.finished, raw)
     }
 
     /// Drain lines that have scrolled off the top of the virtual terminal.

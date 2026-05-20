@@ -1,27 +1,24 @@
 //! Demo: capture a screen-rewriting program via PTY and overlay a peinture
-//! beacon below it.
+//! beacon below it using a scroll region.
 //!
-//! The beacon follows the captured content — it starts near the top and
-//! moves down as the program fills the screen, just like `beacon_demo`.
+//! nom's raw output is relayed directly into a DECSTBM scroll region.
+//! The beacon is drawn below the scroll region via absolute positioning.
+//! When content scrolls off the top, it goes into real terminal scrollback.
 //!
-//! Layout (grows over time):
+//! Layout:
 //!   ─── top of terminal ───
-//!   captured program screen     ← only active (non-empty) rows
-//!   beacon                      ← right below, moves down as content grows
-//!   (empty space)
+//!   scroll region (rows 1 to N)   ← nom's raw output relayed here
+//!   beacon (rows N+1 to bottom)   ← redrawn each frame via save/restore cursor
 //!   ─── bottom of terminal ───
 //!
 //! Usage:
 //!   cargo run --features pty --example pty_demo -- <command> [args...]
 //!
 //! Examples:
-//!   # Overlay beacon on top of nix-output-monitor:
 //!   cargo run --features pty --example pty_demo -- \
 //!       nom -- nix build '.#devShells.x86_64-linux.default'
 //!
-//!   # Any screen-rewriting program works:
 //!   cargo run --features pty --example pty_demo -- htop
-//!   cargo run --features pty --example pty_demo -- watch -n1 date
 #![allow(clippy::print_stderr, clippy::print_stdout, clippy::unwrap_used)]
 
 use peinture::component::beacon::{self, BeaconState, Severity};
@@ -66,12 +63,15 @@ fn main() {
         BeaconItem::workload(StatusIcon::InProgress, &cmd_display),
     );
 
-    // Reserve space for beacon at max capacity.
-    let probe_state = beacon_probe_state(&theme);
-    let beacon_height = beacon::render_live(&probe_state, Instant::now(), &theme)
+    // Measure beacon height at max capacity.
+    let probe = beacon_probe_state(&theme);
+    let beacon_height = beacon::render_live(&probe, Instant::now(), &theme)
         .lines
         .len() as u16;
-    let capture_rows = ctx.term_height.saturating_sub(beacon_height).max(4);
+
+    // Scroll region = rows 1..scroll_bottom. Beacon lives below.
+    let scroll_bottom = ctx.term_height.saturating_sub(beacon_height);
+    let capture_rows = scroll_bottom.max(4);
 
     let str_args: Vec<&str> = args[1..].iter().map(|s| s.as_str()).collect();
     let mut capture = PtyCapture::spawn(&args[0], &str_args, capture_rows, ctx.term_width)
@@ -80,34 +80,51 @@ fn main() {
             std::process::exit(1);
         });
 
-    let _ = std::io::stderr().write_all(b"\x1b[?25l");
-    let _ = std::io::stderr().flush();
+    let mut stderr = std::io::stderr();
+
+    // Hide cursor, set scroll region, position cursor at top.
+    let _ = stderr.write_all(
+        format!("\x1b[?25l\x1b[1;{scroll_bottom}r\x1b[1;1H").as_bytes(),
+    );
+    let _ = stderr.flush();
     install_cleanup_hook();
 
     let start = Instant::now();
 
     // ─── Main render loop ────────────────────────────────────────────────
     loop {
-        let running = capture.process_available();
+        let (running, raw) = capture.process_available_raw();
+
+        // Relay nom's raw output into the scroll region.
+        if !raw.is_empty() {
+            let _ = stderr.write_all(&raw);
+            let _ = stderr.flush();
+        }
 
         // Handle terminal resize.
         let prev_width = ctx.term_width;
         let prev_height = ctx.term_height;
         ctx.refresh_size();
         if ctx.term_width != prev_width || ctx.term_height != prev_height {
-            let new_capture_rows = ctx.term_height.saturating_sub(beacon_height).max(4);
+            let new_scroll_bottom = ctx.term_height.saturating_sub(beacon_height);
+            let new_capture_rows = new_scroll_bottom.max(4);
             capture.resize(new_capture_rows, ctx.term_width);
+            // Update scroll region.
+            let _ = stderr.write_all(
+                format!("\x1b[1;{new_scroll_bottom}r").as_bytes(),
+            );
+            let _ = stderr.flush();
         }
 
+        // Draw beacon below the scroll region (save/restore cursor so
+        // nom's cursor position is preserved).
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
-
-        // Only render active (non-empty) rows — beacon follows the content.
-        let screen = capture.screen_lines();
-        let active = capture.active_rows();
-        let active_screen = &screen[..active];
         let beacon_frame = beacon::render_live(&state, start, &theme);
-
-        render_compact(active_screen, &beacon_frame.lines, ctx.term_height);
+        draw_beacon(
+            &beacon_frame.lines,
+            ctx.term_height.saturating_sub(beacon_height),
+            ctx.term_height,
+        );
 
         if !running {
             break;
@@ -124,22 +141,33 @@ fn main() {
             .meta(format!("{:.1}s", start.elapsed().as_secs_f64())),
     );
 
+    // Let pulse finish.
     loop {
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
         let beacon_frame = beacon::render_live(&state, start, &theme);
-        render_compact(&[], &beacon_frame.lines, ctx.term_height);
+        draw_beacon(
+            &beacon_frame.lines,
+            ctx.term_height.saturating_sub(beacon_height),
+            ctx.term_height,
+        );
         thread::sleep(Duration::from_millis(frame_ms));
         if beacon::is_at_rest(start, &theme) {
             break;
         }
     }
 
-    // ─── Final: clear screen, print static beacon, restore cursor ────────
+    // ─── Final: reset scroll region, clear beacon area, print static ─────
     state.is_active = false;
     let frame = beacon::render_static(&state, &theme);
 
     let mut buf = String::new();
-    buf.push_str("\x1b[r\x1b[2J\x1b[1;1H");
+    // Reset scroll region, move below last nom output, show cursor.
+    buf.push_str("\x1b[r");
+    // Move to the row after the scroll region to print final beacon.
+    let final_row = ctx.term_height.saturating_sub(beacon_height) + 1;
+    buf.push_str(&format!("\x1b[{final_row};1H"));
+    // Clear from here to bottom.
+    buf.push_str("\x1b[J");
     for line in &frame.lines {
         buf.push_str(line);
         buf.push('\n');
@@ -149,41 +177,24 @@ fn main() {
     let _ = std::io::stderr().flush();
 }
 
-/// Render content + beacon as a compact block starting from row 1.
-/// The beacon sits right below the active content and moves down as
-/// the content grows — empty space stays below.
-fn render_compact(screen_lines: &[String], beacon_lines: &[String], term_height: u16) {
-    let mut buf = String::with_capacity(4096);
-    buf.push_str("\x1b[?2026h");
+/// Draw beacon below the scroll region using save/restore cursor.
+/// This preserves nom's cursor position so its output isn't disrupted.
+fn draw_beacon(lines: &[String], scroll_bottom: u16, term_height: u16) {
+    let mut buf = String::with_capacity(2048);
+    buf.push_str("\x1b[?2026h"); // sync begin
+    buf.push_str("\x1b7");       // save cursor (DECSC)
 
-    let mut row: u16 = 1;
-
-    // Active captured screen lines.
-    for line in screen_lines {
+    let beacon_start = scroll_bottom + 1;
+    for (i, line) in lines.iter().enumerate() {
+        let row = beacon_start + i as u16;
         if row > term_height {
             break;
         }
         buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
-        row += 1;
     }
 
-    // Beacon right below.
-    for line in beacon_lines {
-        if row > term_height {
-            break;
-        }
-        buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
-        row += 1;
-    }
-
-    // Clear remaining rows below.
-    while row <= term_height {
-        buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
-        row += 1;
-    }
-
-    buf.push_str(&format!("\x1b[{term_height};1H"));
-    buf.push_str("\x1b[?2026l");
+    buf.push_str("\x1b8");       // restore cursor (DECRC)
+    buf.push_str("\x1b[?2026l"); // sync end
 
     let _ = std::io::stderr().write_all(buf.as_bytes());
     let _ = std::io::stderr().flush();
@@ -209,7 +220,8 @@ fn beacon_probe_state(theme: &Theme) -> BeaconState {
 
 fn install_cleanup_hook() {
     let _ = ctrlc::set_handler(move || {
-        let _ = std::io::stderr().write_all(b"\x1b[r\x1b[?25h\x1b[2J\x1b[1;1H");
+        // Reset scroll region + show cursor.
+        let _ = std::io::stderr().write_all(b"\x1b[r\x1b[?25h");
         let _ = std::io::stderr().flush();
         std::process::exit(130);
     });

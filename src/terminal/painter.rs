@@ -155,12 +155,24 @@ impl Painter {
         }
     }
 
-    /// Transition from Filling to Pinned: set scroll region.
+    /// Transition from Filling to Pinned: clear old beacon, set scroll region.
     fn transition_to_pinned(&mut self, beacon_height: u16) {
-        let scroll_bottom = self.term_height.saturating_sub(beacon_height);
         let mut buf = String::new();
+
+        // Clear the old beacon from Filling phase (cursor is at end of last beacon line).
+        // Go up to first beacon line, clear to end of screen.
+        if self.pinned_line_count > 1 {
+            buf.push_str(&format!("\x1b[{}F", self.pinned_line_count - 1));
+        } else if self.pinned_line_count == 1 {
+            buf.push('\r');
+        }
+        buf.push_str("\x1b[J"); // clear from cursor to end of screen
+
+        // Set scroll region — beacon will be drawn at bottom on next frame
+        let scroll_bottom = self.term_height.saturating_sub(beacon_height);
         buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
         buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+
         let _ = self.term.write_all(buf.as_bytes());
         let _ = self.term.flush();
         self.phase = Phase::Pinned;
