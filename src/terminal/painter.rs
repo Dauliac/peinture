@@ -119,16 +119,21 @@ impl Painter {
             buf.extend_from_slice(b"\r");
         }
 
-        // INSERT stream lines above beacon using \x1b[L (Insert Line).
-        // Each \x1b[L inserts a blank line at cursor, pushing beacon DOWN.
-        // Then we write the stream content on that line.
+        // INSERT stream lines above beacon using \x1b[{n}L (Insert N Lines).
+        // This inserts N blank lines at cursor, pushing beacon DOWN by N.
+        // Then write stream content on those blank lines sequentially.
         // The beacon is NEVER overwritten — just shifted. No blink.
-        for line in &flushed {
-            buf.extend_from_slice(b"\x1b[L");  // insert blank line, beacon pushed down
-            buf.extend_from_slice(line.as_bytes());
-            buf.extend_from_slice(b"\x1b[K");  // clear rest of line
-            buf.extend_from_slice(b"\n");       // move to next line
-            self.stream_lines_total += 1;
+        if !flushed.is_empty() {
+            let n = flushed.len();
+            // Insert N blank lines at once — beacon pushed down by N
+            buf.extend_from_slice(format!("\x1b[{n}L").as_bytes());
+            // Write content on each inserted line
+            for line in &flushed {
+                buf.extend_from_slice(line.as_bytes());
+                buf.extend_from_slice(b"\x1b[K\n");
+                self.stream_lines_total += 1;
+            }
+            // Cursor is now at the first beacon line (pushed down by N)
         }
 
         // Now cursor is at the first beacon line (which was pushed down).

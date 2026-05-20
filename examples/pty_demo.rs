@@ -98,13 +98,11 @@ fn main() {
             let _ = stderr.flush();
         }
 
-        // Grow the virtual terminal when the program needs more space.
+        // Grow the virtual terminal one row at a time — the beacon
+        // scrolls down smoothly as content pushes it.
         if capture.needs_grow() && current_rows < max_capture_rows {
-            // Grow by a few rows to reduce SIGWINCH frequency.
-            let new_rows = (current_rows + 4).min(max_capture_rows);
-            current_rows = new_rows;
+            current_rows += 1;
             capture.resize(current_rows, ctx.term_width);
-            // Expand scroll region to match.
             let _ = stderr.write_all(
                 format!("\x1b[1;{current_rows}r").as_bytes(),
             );
