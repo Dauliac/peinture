@@ -108,13 +108,32 @@ impl Painter {
         let mut buf = Vec::<u8>::with_capacity(4096);
         buf.extend_from_slice(SYNC_BEGIN.as_bytes());
 
-        // Erase previous beacon (cursor-up + clear, nom-style)
+        // Move cursor to start of previous beacon
         if self.pinned_line_count > 1 {
             buf.extend_from_slice(format!("\x1b[{}F", self.pinned_line_count - 1).as_bytes());
         } else if self.pinned_line_count == 1 {
             buf.extend_from_slice(b"\r");
         }
-        // Don't clear — just overwrite below
+
+        // If beacon grew: we need extra rows below the old beacon.
+        // Clear them first so the new notification lines don't flash
+        // over old content for one frame.
+        let new_h = pinned_lines.len();
+        if new_h > self.pinned_line_count && self.pinned_line_count > 0 {
+            // Save position, go down past old beacon, clear extra rows, restore
+            let extra = new_h - self.pinned_line_count;
+            // Move to end of old beacon
+            if self.pinned_line_count > 1 {
+                buf.extend_from_slice(format!("\x1b[{}E", self.pinned_line_count - 1).as_bytes());
+            }
+            // Clear the extra rows below
+            for _ in 0..extra {
+                buf.extend_from_slice(b"\n\x1b[2K");
+            }
+            // Move back to start of old beacon
+            let total_down = (self.pinned_line_count - 1) + extra;
+            buf.extend_from_slice(format!("\x1b[{}F", total_down).as_bytes());
+        }
 
         // Write stream lines (push beacon down)
         for line in &flushed {
