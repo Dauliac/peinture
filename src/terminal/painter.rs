@@ -103,13 +103,21 @@ impl Painter {
             self.initialized = true;
 
         // ── Path 2: Resize ──
-        // Don't clear content rows — terminal already reflowed them.
-        // Just reset scroll region, set new one, draw beacon at new position.
-        // Old beacon text becomes part of scroll region and scrolls away.
         } else if resized {
             buf.push_str("\x1b[r"); // reset scroll region
 
-            // Only clear the NEW beacon area (where we're about to draw)
+            // On GROW: clear old beacon at old position (it's still there,
+            // terminal didn't reflow it). Safe — those rows have beacon text.
+            // On SHRINK: don't clear old position (terminal removed those rows,
+            // content reflowed — clearing would destroy stream content).
+            if self.term_height > self.prev_term_height {
+                let old_beacon_start = self.prev_term_height.saturating_sub(old_height) + 1;
+                for row in old_beacon_start..=self.prev_term_height {
+                    buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+                }
+            }
+
+            // Clear new beacon area (where we'll draw)
             let new_beacon_start = self.term_height.saturating_sub(new_height) + 1;
             for row in new_beacon_start..=self.term_height {
                 buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
