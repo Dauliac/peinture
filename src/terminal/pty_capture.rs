@@ -9,16 +9,21 @@
 //! ANSI-formatted lines and can be combined with a peinture beacon in a
 //! single `Painter::render_frame()` call.
 //!
-//! # Example
+//! Lines that scroll off the top of the virtual terminal are captured via
+//! the `vt100` scrollback buffer and can be drained with
+//! [`PtyCapture::drain_scrollback()`] to feed into
+//! [`Painter::stream_line()`](super::painter::Painter::stream_line).
 //!
-//! ```rust,ignore
-//! use peinture::terminal::pty_capture::PtyCapture;
+//! # Layout
 //!
-//! let mut cap = PtyCapture::spawn("nom", &["--", "nix", "build"], 20, 80)?;
-//! while cap.process_available() {
-//!     let lines = cap.screen_lines();
-//!     // combine with beacon, render via Painter
-//! }
+//! ```text
+//! ─── top of real terminal ───
+//! scrolled-off lines           ← drain_scrollback() → stream_line()
+//! ─── top of virtual window ──
+//! captured program screen      ← screen_lines() → pinned region
+//! ─── bottom of virtual window
+//! notification center + beacon ← beacon render  → pinned region
+//! ─── bottom of real terminal ─
 //! ```
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -26,17 +31,22 @@ use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
 
+/// Large scrollback buffer — rows that scroll off the top of the virtual
+/// terminal are kept here so `drain_scrollback()` can retrieve them.
+const SCROLLBACK_LEN: usize = 5000;
+
 /// A captured PTY process whose screen output is interpreted by a virtual
 /// terminal emulator (`vt100`).
 pub struct PtyCapture {
     parser: vt100::Parser,
     rx: mpsc::Receiver<Vec<u8>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    /// Keep master alive so the PTY pair stays connected.
-    _master: Box<dyn portable_pty::MasterPty + Send>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
     finished: bool,
     rows: u16,
     cols: u16,
+    /// How many scrollback rows we've already drained.
+    scrollback_seen: usize,
 }
 
 impl PtyCapture {
@@ -88,16 +98,17 @@ impl PtyCapture {
             reader_loop(reader, tx);
         });
 
-        let parser = vt100::Parser::new(rows, cols, 0);
+        let parser = vt100::Parser::new(rows, cols, SCROLLBACK_LEN);
 
         Ok(Self {
             parser,
             rx,
             child,
-            _master: pair.master,
+            master: pair.master,
             finished: false,
             rows,
             cols,
+            scrollback_seen: 0,
         })
     }
 
@@ -122,6 +133,50 @@ impl PtyCapture {
         !self.finished
     }
 
+    /// Drain lines that have scrolled off the top of the virtual terminal.
+    ///
+    /// Returns ANSI-formatted lines suitable for
+    /// [`Painter::stream_line()`](super::painter::Painter::stream_line).
+    /// Call this every frame *after* [`process_available()`](Self::process_available).
+    pub fn drain_scrollback(&mut self) -> Vec<String> {
+        // Probe how many rows are in the scrollback buffer.
+        // set_scrollback(MAX) clamps to scrollback.len().
+        self.parser.set_scrollback(usize::MAX);
+        let total = self.parser.screen().scrollback();
+        self.parser.set_scrollback(0);
+
+        if total <= self.scrollback_seen {
+            return vec![];
+        }
+
+        let new_count = total - self.scrollback_seen;
+        // We can safely set offset up to self.rows (screen height).
+        // With offset=N, visible_rows() returns: last N scrollback rows +
+        // first (screen_rows - N) screen rows. N must be <= screen_rows.
+        let safe_offset = new_count.min(self.rows as usize);
+
+        self.parser.set_scrollback(safe_offset);
+
+        // The first `safe_offset` items from rows_formatted() are the
+        // newest scrollback rows. We want them all (they are the new ones
+        // that weren't in the buffer last time we looked).
+        let lines: Vec<String> = self
+            .parser
+            .screen()
+            .rows_formatted(0, self.cols)
+            .take(safe_offset)
+            .map(|bytes| {
+                let s = String::from_utf8_lossy(&bytes);
+                s.trim_end().to_string()
+            })
+            .collect();
+
+        self.parser.set_scrollback(0);
+        self.scrollback_seen = total;
+
+        lines
+    }
+
     /// Get the current virtual screen as ANSI-formatted lines.
     ///
     /// Each line contains ANSI color/style escape sequences matching what the
@@ -139,24 +194,22 @@ impl PtyCapture {
         contents.lines().map(String::from).collect()
     }
 
-    /// Number of non-empty lines on the virtual screen.
+    /// Resize the virtual terminal and notify the child process (SIGWINCH).
     ///
-    /// Useful for trimming the captured output to only the portion the
-    /// child actually wrote to.
-    pub fn active_rows(&self) -> usize {
-        let screen = self.parser.screen();
-        let mut last_nonempty = 0;
-        for row in 0..self.rows {
-            for col in 0..self.cols {
-                if let Some(cell) = screen.cell(row, col) {
-                    if !cell.contents().is_empty() && cell.contents() != " " {
-                        last_nonempty = row as usize + 1;
-                        break;
-                    }
-                }
-            }
+    /// Call this when the real terminal size changes.
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        if rows == self.rows && cols == self.cols {
+            return;
         }
-        last_nonempty
+        self.rows = rows;
+        self.cols = cols;
+        self.parser.set_size(rows, cols);
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
     }
 
     /// Whether the child process has exited.
@@ -167,7 +220,6 @@ impl PtyCapture {
     /// Wait for the child to exit and return its exit status.
     pub fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
         let status = self.child.wait()?;
-        // Drain remaining output.
         while let Ok(bytes) = self.rx.try_recv() {
             self.parser.process(&bytes);
         }
@@ -237,7 +289,6 @@ fn row_to_ansi(screen: &vt100::Screen, row: u16, cols: u16) -> String {
         String::new()
     } else if trimmed.len() < out.len() {
         let mut s = trimmed.to_string();
-        // Re-append reset if it was trimmed.
         if !s.ends_with("\x1b[0m") && prev != CellAttrs::default() {
             s.push_str("\x1b[0m");
         }
@@ -252,7 +303,6 @@ struct CellAttrs {
     fg: ColorAttr,
     bg: ColorAttr,
     bold: bool,
-    dim: bool,
     italic: bool,
     underline: bool,
     inverse: bool,
@@ -272,7 +322,6 @@ impl CellAttrs {
             fg: color_from_vt100(cell.fgcolor()),
             bg: color_from_vt100(cell.bgcolor()),
             bold: cell.bold(),
-            dim: false,
             italic: cell.italic(),
             underline: cell.underline(),
             inverse: cell.inverse(),
@@ -284,9 +333,6 @@ impl CellAttrs {
 
         if self.bold {
             params.push("1".into());
-        }
-        if self.dim {
-            params.push("2".into());
         }
         if self.italic {
             params.push("3".into());
