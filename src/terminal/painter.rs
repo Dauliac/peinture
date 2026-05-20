@@ -46,36 +46,42 @@ impl Painter {
     }
 
     /// Render a frame (single atomic write).
+    /// Render a frame — overwrite in place, no bulk erase.
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
+        let old_count = self.pinned_count;
+        let new_count = pinned_lines.len();
+
         let mut buf = String::new();
         buf.push_str(SYNC_BEGIN);
 
-        // 1. Move to start of previous beacon and clear
-        // Cursor is at end of last beacon line (no trailing \n).
-        // \x1b[nF = Cursor Previous Line: up n lines, column 0.
-        if self.pinned_count > 1 {
-            buf.push_str(&format!("\x1b[{}F", self.pinned_count - 1));
-        } else if self.pinned_count == 1 {
-            buf.push('\r'); // just go to column 0 on current line
-        }
-        // Clear from cursor to end of screen (erases old beacon)
-        if self.pinned_count > 0 {
-            buf.push_str("\x1b[J");
+        // 1. Move cursor to start of previous beacon
+        if old_count > 1 {
+            buf.push_str(&format!("\x1b[{}F", old_count - 1));
+        } else if old_count == 1 {
+            buf.push('\r');
         }
 
-        // 2. Print stream content (becomes scrollback)
+        // 2. Stream lines: each one scrolls old content up naturally.
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
         for line in &drained {
-            buf.push_str(line);
-            buf.push('\n');
+            buf.push_str(&format!("\x1b[2K{line}\n"));
         }
 
-        // 3. Draw beacon — NO trailing newline on last line
+        // 3. Overwrite beacon lines in place — per-line clear, no bulk erase.
         for (i, line) in pinned_lines.iter().enumerate() {
-            buf.push_str(line);
-            if i < pinned_lines.len() - 1 {
+            buf.push_str(&format!("\x1b[2K{line}"));
+            if i < new_count - 1 {
                 buf.push('\n');
             }
+        }
+
+        // 4. If beacon shrank, clear leftover lines below
+        if new_count < old_count {
+            for _ in 0..(old_count - new_count) {
+                buf.push_str("\n\x1b[2K");
+            }
+            // Move back up to end of last beacon line
+            buf.push_str(&format!("\x1b[{}F", old_count - new_count));
         }
 
         buf.push_str(SYNC_END);
@@ -83,7 +89,7 @@ impl Painter {
         let _ = self.term.write_all(buf.as_bytes());
         let _ = self.term.flush();
 
-        self.pinned_count = pinned_lines.len();
+        self.pinned_count = new_count;
     }
 
     /// Clear beacon and print final static content.
