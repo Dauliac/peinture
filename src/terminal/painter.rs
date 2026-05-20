@@ -1,13 +1,11 @@
 //! Painter — nom-style terminal renderer with pinned region at bottom.
 //!
-//! Each frame:
-//! 1. Cursor up by last beacon height
-//! 2. Clear those lines
-//! 3. Print stream content (becomes scrollback)
-//! 4. Print beacon content
-//!
-//! No scroll regions, no fixed reservations. The beacon is simply
-//! the last N lines on screen, redrawn each frame.
+//! Uses save/restore cursor position to avoid line-counting errors:
+//! 1. Restore cursor to where beacon starts
+//! 2. Clear from cursor to end of screen
+//! 3. Print stream content (scrolls into history)
+//! 4. Save cursor position (new beacon start)
+//! 5. Draw beacon
 
 use console::Term;
 use std::io::Write;
@@ -16,12 +14,18 @@ use super::sync_update::{SYNC_BEGIN, SYNC_END};
 
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
-/// Terminal painter — nom-style pinned region at bottom.
+/// Save cursor position.
+const CURSOR_SAVE: &str = "\x1b7";
+/// Restore cursor position.
+const CURSOR_RESTORE: &str = "\x1b8";
+/// Clear from cursor to end of screen.
+const CLEAR_TO_END: &str = "\x1b[J";
+
 pub struct Painter {
     term: Term,
-    /// How many lines the beacon occupied last frame.
-    pinned_line_count: usize,
-    /// Pending stream lines to flush.
+    /// Whether we've saved the initial cursor position.
+    has_saved_position: bool,
+    /// Pending stream lines.
     stream_buffer: Vec<String>,
     cursor_hidden: bool,
     term_width: u16,
@@ -31,53 +35,45 @@ impl Painter {
     pub fn new(term_width: u16) -> Self {
         Self {
             term: Term::stderr(),
-            pinned_line_count: 0,
+            has_saved_position: false,
             stream_buffer: Vec::new(),
             cursor_hidden: false,
             term_width,
         }
     }
 
-    /// Queue a stream line (will be printed above beacon next frame).
     pub fn stream_line(&mut self, line: String) {
         self.stream_buffer.push(line);
     }
 
-    /// Queue multiple stream lines.
     pub fn stream_lines(&mut self, lines: impl IntoIterator<Item = String>) {
         self.stream_buffer.extend(lines);
     }
 
     /// Render a frame.
-    ///
-    /// 1. Erase the previous beacon (cursor-up + clear)
-    /// 2. Print any pending stream content (scrolls into history)
-    /// 3. Draw the new beacon
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
         let mut buf = String::new();
         buf.push_str(SYNC_BEGIN);
 
-        // 1. Erase previous beacon
-        if self.pinned_line_count > 0 {
-            // Move to start of previous beacon
-            buf.push_str(&format!("\x1b[{}A", self.pinned_line_count));
-            for _ in 0..self.pinned_line_count {
-                buf.push_str("\x1b[2K\n");
-            }
-            // Move back to where beacon started
-            buf.push_str(&format!("\x1b[{}A", self.pinned_line_count));
+        if self.has_saved_position {
+            // Restore to where beacon started last frame
+            buf.push_str(CURSOR_RESTORE);
+            // Clear everything from there to end of screen
+            buf.push_str(CLEAR_TO_END);
         }
 
-        // 2. Print stream content (becomes scrollback above beacon)
+        // Print stream content (becomes scrollback)
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
         for line in &drained {
             buf.push_str(line);
-            buf.push_str("\x1b[0K\n"); // clear rest of line + newline
+            buf.push('\n');
         }
 
-        // 3. Draw new beacon
+        // Save position — this is where the beacon starts
+        buf.push_str(CURSOR_SAVE);
+
+        // Draw beacon
         for (i, line) in pinned_lines.iter().enumerate() {
-            buf.push_str("\x1b[2K"); // clear line
             buf.push_str(line);
             if i < pinned_lines.len() - 1 {
                 buf.push('\n');
@@ -89,25 +85,19 @@ impl Painter {
         let _ = self.term.write_all(buf.as_bytes());
         let _ = self.term.flush();
 
-        self.pinned_line_count = pinned_lines.len();
+        self.has_saved_position = true;
     }
 
     /// Clear beacon and print final static content.
     pub fn print_final(&mut self, lines: &[String]) {
-        // Erase beacon
-        if self.pinned_line_count > 0 {
+        if self.has_saved_position {
             let mut buf = String::new();
-            buf.push_str(&format!("\x1b[{}A", self.pinned_line_count));
-            for _ in 0..self.pinned_line_count {
-                buf.push_str("\x1b[2K\n");
-            }
-            buf.push_str(&format!("\x1b[{}A", self.pinned_line_count));
+            buf.push_str(CURSOR_RESTORE);
+            buf.push_str(CLEAR_TO_END);
             let _ = self.term.write_all(buf.as_bytes());
             let _ = self.term.flush();
-            self.pinned_line_count = 0;
+            self.has_saved_position = false;
         }
-
-        // Print final content as normal scrollback
         for line in lines {
             let _ = self.term.write_line(line);
         }
