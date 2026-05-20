@@ -35,7 +35,7 @@ fn main() {
     // Fast fade for demo
     let mut theme = theme;
     theme.beacon.notification_ttl_ms = 3_000;
-    theme.beacon.notification_fade_start = 0.88;
+    theme.beacon.notification_fade_start = 0.80;
 
     let min_batch = theme.beacon.max_items + 1; // batch fills any notification gap
     let mut painter = Painter::new(ctx.term_width, ctx.term_height, min_batch);

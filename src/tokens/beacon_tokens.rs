@@ -30,7 +30,7 @@ impl Default for BeaconTokens {
             fps: 12,
             pulse_cycle_ms: 2200,
             notification_ttl_ms: 6_000,
-            notification_fade_start: 0.92,
+            notification_fade_start: 0.85,
             // 5 stages — left column is always █ (matches ├ width)
             // Pulse expands RIGHT into the second column
             // Left edge perfectly aligned with tree connectors
