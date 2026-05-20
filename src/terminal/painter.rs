@@ -55,6 +55,20 @@ impl Painter {
 
     /// Render a frame.
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
+        // Detect terminal resize
+        let (new_term_h, new_term_w) = self.term.size();
+        if self.initialized && (new_term_w != self.term_width || new_term_h != self.term_height) {
+            self.term_width = new_term_w;
+            self.term_height = new_term_h;
+            self.initialized = false; // force reinit on this frame
+        }
+
+        // Truncate all lines to terminal width (prevents wrapping artifacts)
+        let tw = self.term_width;
+        let pinned_lines: Vec<String> = pinned_lines.iter()
+            .map(|l| truncate_line(l, tw))
+            .collect();
+
         let new_height = pinned_lines.len() as u16;
         let old_height = self.pinned_line_count as u16;
 
@@ -71,7 +85,10 @@ impl Painter {
         let to_flush = to_flush.min(self.buffer.len()); // can't flush more than we have
 
         // Drain lines to flush from front of buffer
-        let flushed: Vec<String> = self.buffer.drain(..to_flush).collect();
+        let tw = self.term_width;
+        let flushed: Vec<String> = self.buffer.drain(..to_flush)
+            .map(|l| truncate_line(&l, tw))
+            .collect();
 
         let mut buf = String::with_capacity(4096);
         buf.push_str(SYNC_BEGIN);
@@ -228,6 +245,7 @@ impl Painter {
         self.initialized = false;
     }
 
+
     pub fn count_wrapped_lines(&self, line: &str) -> usize {
         if self.term_width == 0 { return 1; }
         let visible_len = console::measure_text_width(line);
@@ -242,6 +260,33 @@ impl Drop for Painter {
         let _ = self.term.flush();
         self.cursor_hidden = false;
     }
+}
+
+/// Truncate a line to fit terminal width (respects ANSI escape codes).
+fn truncate_line(line: &str, max_width: u16) -> String {
+    let visible_width = console::measure_text_width(line);
+    if visible_width <= max_width as usize {
+        return line.to_string();
+    }
+    let mut result = String::new();
+    let mut width = 0;
+    let mut in_escape = false;
+    for ch in line.chars() {
+        if ch == '\x1b' {
+            in_escape = true;
+            result.push(ch);
+        } else if in_escape {
+            result.push(ch);
+            if ch == 'm' { in_escape = false; }
+        } else {
+            let cw = console::measure_text_width(&ch.to_string());
+            if width + cw > max_width as usize { break; }
+            result.push(ch);
+            width += cw;
+        }
+    }
+    result.push_str("\x1b[0m");
+    result
 }
 
 fn install_cursor_restore_hook() {

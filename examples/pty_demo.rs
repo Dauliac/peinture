@@ -14,7 +14,7 @@
 //!   cargo run --features pty --example pty_demo -- watch -n1 date
 #![allow(clippy::print_stderr, clippy::print_stdout, clippy::unwrap_used)]
 
-use peinture::component::beacon::{self, BeaconState, ItemKind, Severity};
+use peinture::component::beacon::{self, BeaconState, Severity};
 use peinture::component::BeaconItem;
 use peinture::terminal::OutputContext;
 use peinture::terminal::painter::Painter;
@@ -56,7 +56,7 @@ fn main() {
             std::process::exit(1);
         });
 
-    let mut painter = Painter::new(ctx.term_width, ctx.term_height);
+    let mut painter = Painter::new(ctx.term_width, ctx.term_height, beacon_reserve as usize);
     painter.hide_cursor();
 
     let start = Instant::now();
@@ -66,13 +66,7 @@ fn main() {
         phase: Some("Running...".into()),
         is_active: true,
         severity: Severity::Ok,
-        items: vec![BeaconItem {
-            status: StatusIcon::InProgress,
-            message: cmd_display.clone(),
-            metadata: None,
-            detail: None,
-            kind: ItemKind::Workload,
-        }],
+        items: vec![BeaconItem::workload(StatusIcon::InProgress, cmd_display.clone())],
         ..BeaconState::default()
     };
 
