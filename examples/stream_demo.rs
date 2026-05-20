@@ -18,8 +18,7 @@ fn main() {
     }
 
     let theme = Theme::default();
-    let reserved = (theme.beacon.max_items + 1) as u16;
-    let mut painter = Painter::new(ctx.term_width, ctx.term_height, reserved);
+    let mut painter = Painter::new(ctx.term_width);
     painter.hide_cursor();
     let start = Instant::now();
 

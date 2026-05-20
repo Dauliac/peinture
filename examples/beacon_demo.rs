@@ -37,8 +37,7 @@ fn main() {
     theme.beacon.notification_ttl_ms = 4_000;
     theme.beacon.notification_fade_start = 0.94;
 
-    let reserved = (theme.beacon.max_items + 1) as u16;
-    let mut painter = Painter::new(ctx.term_width, ctx.term_height, reserved);
+    let mut painter = Painter::new(ctx.term_width);
     painter.hide_cursor();
     let start = Instant::now();
     let frame_ms = theme.beacon.frame_interval_ms();
