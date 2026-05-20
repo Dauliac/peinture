@@ -1,13 +1,13 @@
-//! Painter — scroll region renderer with stream line buffer.
+//! Painter — two-phase renderer.
 //!
-//! Stream lines go into a FIFO buffer (size = max beacon height).
-//! Each frame, overflow lines are flushed to the screen.
-//! When a notification is removed (beacon shrinks by N), N extra
-//! lines are pulled from the buffer to fill the freed space.
+//! **Phase 1 (Filling)**: Beacon starts right below cursor. Stream content
+//! pushes it down. No scroll region — uses nom-style cursor-up/redraw.
+//! No blank lines between prompt and beacon.
 //!
-//! Resize is handled separately from first-init:
-//! - First-init: push minimal newlines, set scroll region
-//! - Resize: clear old beacon at OLD position, set new scroll region
+//! **Phase 2 (Pinned)**: When screen fills, scroll region locks the beacon
+//! at the bottom. Stream scrolls above. No blink.
+//!
+//! Transition happens automatically when total printed lines >= term_height.
 
 use console::Term;
 use std::collections::VecDeque;
@@ -17,31 +17,43 @@ use super::sync_update::{SYNC_BEGIN, SYNC_END};
 
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Phase {
+    /// Beacon follows content, no scroll region. Screen not yet full.
+    Filling,
+    /// Beacon pinned at bottom, scroll region active.
+    Pinned,
+}
+
 pub struct Painter {
     term: Term,
+    phase: Phase,
+    /// Beacon lines from last frame (for cursor-up in Filling phase).
     pinned_line_count: usize,
+    /// Total stream lines printed so far (for Filling→Pinned transition).
+    stream_lines_total: usize,
+    /// FIFO buffer for stream lines.
     buffer: VecDeque<String>,
     reserve: usize,
     cursor_hidden: bool,
     term_width: u16,
     term_height: u16,
-    /// Previous terminal height — used to clear old beacon on resize.
     prev_term_height: u16,
-    initialized: bool,
 }
 
 impl Painter {
     pub fn new(term_width: u16, term_height: u16, reserve: usize) -> Self {
         Self {
             term: Term::stderr(),
+            phase: Phase::Filling,
             pinned_line_count: 0,
+            stream_lines_total: 0,
             buffer: VecDeque::new(),
             reserve,
             cursor_hidden: false,
             term_width,
             term_height,
             prev_term_height: term_height,
-            initialized: false,
         }
     }
 
@@ -54,35 +66,109 @@ impl Painter {
     }
 
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
-        // ── Detect resize (separate from first-init) ──
-        let (new_term_h, new_term_w) = self.term.size();
-        let resized = self.initialized
-            && (new_term_w != self.term_width || new_term_h != self.term_height);
-
+        // Detect resize
+        let (new_h, new_w) = self.term.size();
+        let resized = new_w != self.term_width || new_h != self.term_height;
         if resized {
             self.prev_term_height = self.term_height;
-            self.term_width = new_term_w;
-            self.term_height = new_term_h;
+            self.term_width = new_w;
+            self.term_height = new_h;
+            // If pinned and resize: handle scroll region change
+            if self.phase == Phase::Pinned {
+                self.handle_resize(pinned_lines);
+                return;
+            }
+            // If filling: just update dimensions, continue normally
         }
 
-        // Truncate all lines to terminal width
+        // Truncate lines
         let tw = self.term_width;
         let pinned_lines: Vec<String> = pinned_lines.iter()
             .map(|l| truncate_line(l, tw))
             .collect();
 
         let new_height = pinned_lines.len() as u16;
+
+        match self.phase {
+            Phase::Filling => self.render_filling(&pinned_lines, new_height),
+            Phase::Pinned => self.render_pinned(&pinned_lines, new_height),
+        }
+    }
+
+    /// Phase 1: beacon follows content, no scroll region.
+    fn render_filling(&mut self, pinned_lines: &[String], new_height: u16) {
+        // Flush overflow from buffer
+        let overflow = self.buffer.len().saturating_sub(self.reserve);
+        let to_flush = overflow.min(self.buffer.len());
+        let tw = self.term_width;
+        let flushed: Vec<String> = self.buffer.drain(..to_flush)
+            .map(|l| truncate_line(&l, tw))
+            .collect();
+
+        let mut buf = Vec::<u8>::with_capacity(4096);
+        buf.extend_from_slice(SYNC_BEGIN.as_bytes());
+
+        // Erase previous beacon (cursor-up + clear, nom-style)
+        if self.pinned_line_count > 1 {
+            buf.extend_from_slice(format!("\x1b[{}F", self.pinned_line_count - 1).as_bytes());
+        } else if self.pinned_line_count == 1 {
+            buf.extend_from_slice(b"\r");
+        }
+        // Don't clear — just overwrite below
+
+        // Write stream lines (push beacon down)
+        for line in &flushed {
+            buf.extend_from_slice(line.as_bytes());
+            buf.extend_from_slice(b"\x1b[K\n");
+            self.stream_lines_total += 1;
+        }
+
+        // Write beacon lines (overwrite old beacon position)
+        for (i, line) in pinned_lines.iter().enumerate() {
+            buf.extend_from_slice(line.as_bytes());
+            buf.extend_from_slice(b"\x1b[K");
+            if i < pinned_lines.len() - 1 {
+                buf.extend_from_slice(b"\n");
+            }
+        }
+
+        buf.extend_from_slice(SYNC_END.as_bytes());
+
+        let _ = self.term.write_all(&buf);
+        let _ = self.term.flush();
+
+        self.pinned_line_count = pinned_lines.len();
+
+        // Check transition: screen full?
+        let total = self.stream_lines_total + self.pinned_line_count;
+        if total >= self.term_height as usize {
+            self.transition_to_pinned(new_height);
+        }
+    }
+
+    /// Transition from Filling to Pinned: set scroll region.
+    fn transition_to_pinned(&mut self, beacon_height: u16) {
+        let scroll_bottom = self.term_height.saturating_sub(beacon_height);
+        let mut buf = String::new();
+        buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
+        buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+        let _ = self.term.write_all(buf.as_bytes());
+        let _ = self.term.flush();
+        self.phase = Phase::Pinned;
+    }
+
+    /// Phase 2: beacon pinned at bottom, scroll region active.
+    fn render_pinned(&mut self, pinned_lines: &[String], new_height: u16) {
         let old_height = self.pinned_line_count as u16;
 
-        // Buffer flush logic
-        let gap = if !resized && new_height < old_height {
+        // Buffer flush with gap fill
+        let gap = if new_height < old_height {
             (old_height - new_height) as usize
         } else {
             0
         };
         let overflow = self.buffer.len().saturating_sub(self.reserve);
         let to_flush = (overflow + gap).min(self.buffer.len());
-
         let tw = self.term_width;
         let flushed: Vec<String> = self.buffer.drain(..to_flush)
             .map(|l| truncate_line(&l, tw))
@@ -91,51 +177,14 @@ impl Painter {
         let mut buf = String::with_capacity(4096);
         buf.push_str(SYNC_BEGIN);
 
-        // ── Path 1: First-init (only on first frame ever) ──
-        if !self.initialized {
-            // Push only enough newlines for beacon space (not full screen)
-            for _ in 0..new_height {
-                buf.push('\n');
-            }
-            let scroll_bottom = self.term_height.saturating_sub(new_height);
-            buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
-            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
-            self.initialized = true;
-
-        // ── Path 2: Resize ──
-        } else if resized {
-            buf.push_str("\x1b[r"); // reset scroll region
-
-            // On GROW: clear old beacon at old position (it's still there,
-            // terminal didn't reflow it). Safe — those rows have beacon text.
-            // On SHRINK: don't clear old position (terminal removed those rows,
-            // content reflowed — clearing would destroy stream content).
-            if self.term_height > self.prev_term_height {
-                let old_beacon_start = self.prev_term_height.saturating_sub(old_height) + 1;
-                for row in old_beacon_start..=self.prev_term_height {
-                    buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
-                }
-            }
-
-            // Clear new beacon area (where we'll draw)
-            let new_beacon_start = self.term_height.saturating_sub(new_height) + 1;
-            for row in new_beacon_start..=self.term_height {
-                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
-            }
-
-            let scroll_bottom = self.term_height.saturating_sub(new_height);
-            buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
-            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
-
-        // ── Path 3: Beacon height changed (notification added/removed) ──
-        } else if new_height != old_height {
+        if new_height != old_height {
+            // Beacon height changed — resize scroll region
             buf.push_str("\x1b[r");
 
             let old_start = self.term_height.saturating_sub(old_height) + 1;
             let new_start = self.term_height.saturating_sub(new_height) + 1;
             let mut row = old_start;
 
-            // Freed rows: fill with buffer lines
             let gap_lines = &flushed[..gap.min(flushed.len())];
             for line in gap_lines {
                 buf.push_str(&format!("\x1b[{row};1H{line}\x1b[K"));
@@ -146,18 +195,15 @@ impl Painter {
                 row += 1;
             }
 
-            // Beacon rows: overwrite
             for (i, line) in pinned_lines.iter().enumerate() {
                 let r = new_start + i as u16;
                 buf.push_str(&format!("\x1b[{r};1H{line}\x1b[K"));
             }
 
-            // New scroll region
             let scroll_bottom = self.term_height.saturating_sub(new_height);
             buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
 
-            // Remaining flushed lines
             let remaining = &flushed[gap.min(flushed.len())..];
             if !remaining.is_empty() {
                 for line in remaining {
@@ -177,7 +223,7 @@ impl Painter {
             return;
         }
 
-        // ── Normal frame + resize fallthrough: draw stream + beacon ──
+        // Normal pinned frame
         let scroll_bottom = self.term_height.saturating_sub(new_height);
         let pinned_start = scroll_bottom + 1;
 
@@ -198,48 +244,114 @@ impl Painter {
 
         let _ = self.term.write_all(buf.as_bytes());
         let _ = self.term.flush();
+        self.pinned_line_count = pinned_lines.len();
+    }
 
+    /// Handle resize while in Pinned phase.
+    fn handle_resize(&mut self, pinned_lines: &[String]) {
+        let tw = self.term_width;
+        let pinned_lines: Vec<String> = pinned_lines.iter()
+            .map(|l| truncate_line(l, tw))
+            .collect();
+        let new_height = pinned_lines.len() as u16;
+        let old_height = self.pinned_line_count as u16;
+
+        let mut buf = String::with_capacity(2048);
+        buf.push_str(SYNC_BEGIN);
+        buf.push_str("\x1b[r"); // reset scroll region
+
+        // On grow: clear old beacon ghost
+        if self.term_height > self.prev_term_height {
+            let old_beacon_start = self.prev_term_height.saturating_sub(old_height) + 1;
+            for row in old_beacon_start..=self.prev_term_height {
+                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+            }
+        }
+
+        // Clear + draw new beacon area
+        let new_beacon_start = self.term_height.saturating_sub(new_height) + 1;
+        for row in new_beacon_start..=self.term_height {
+            buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+        }
+        for (i, line) in pinned_lines.iter().enumerate() {
+            let row = new_beacon_start + i as u16;
+            buf.push_str(&format!("\x1b[{row};1H{line}\x1b[K"));
+        }
+
+        // New scroll region
+        let scroll_bottom = self.term_height.saturating_sub(new_height);
+        buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
+        buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+        buf.push_str(SYNC_END);
+
+        let _ = self.term.write_all(buf.as_bytes());
+        let _ = self.term.flush();
         self.pinned_line_count = pinned_lines.len();
     }
 
     pub fn clear_pinned(&mut self) {
-        if self.pinned_line_count > 0 {
-            let old_start = self.term_height.saturating_sub(self.pinned_line_count as u16) + 1;
-            let mut buf = String::new();
-            buf.push_str(SYNC_BEGIN);
-            for row in old_start..=self.term_height {
-                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+        match self.phase {
+            Phase::Pinned => {
+                if self.pinned_line_count > 0 {
+                    let old_start = self.term_height.saturating_sub(self.pinned_line_count as u16) + 1;
+                    let mut buf = String::new();
+                    buf.push_str(SYNC_BEGIN);
+                    for row in old_start..=self.term_height {
+                        buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+                    }
+                    buf.push_str(SYNC_END);
+                    let _ = self.term.write_all(buf.as_bytes());
+                    let _ = self.term.flush();
+                }
+                let _ = self.term.write_all(b"\x1b[r");
+                let _ = self.term.flush();
             }
-            buf.push_str(SYNC_END);
-            let _ = self.term.write_all(buf.as_bytes());
-            let _ = self.term.flush();
-            self.pinned_line_count = 0;
+            Phase::Filling => {
+                // Nom-style: cursor up + clear
+                if self.pinned_line_count > 1 {
+                    let _ = self.term.write_all(
+                        format!("\x1b[{}F\x1b[J", self.pinned_line_count - 1).as_bytes()
+                    );
+                } else if self.pinned_line_count == 1 {
+                    let _ = self.term.write_all(b"\r\x1b[J");
+                }
+                let _ = self.term.flush();
+            }
         }
-        let _ = self.term.write_all(b"\x1b[r");
-        let _ = self.term.flush();
+        self.pinned_line_count = 0;
     }
 
     pub fn print_final(&mut self, lines: &[String]) {
+        // Flush remaining buffer
         if !self.buffer.is_empty() {
-            let scroll_bottom = self.term_height.saturating_sub(self.pinned_line_count as u16);
-            let mut buf = String::new();
-            buf.push_str(SYNC_BEGIN);
-            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
-            for line in self.buffer.drain(..) {
-                buf.push_str(&format!("\n{line}\x1b[K"));
+            if self.phase == Phase::Pinned {
+                let scroll_bottom = self.term_height.saturating_sub(self.pinned_line_count as u16);
+                let mut buf = String::new();
+                buf.push_str(SYNC_BEGIN);
+                buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+                for line in self.buffer.drain(..) {
+                    buf.push_str(&format!("\n{line}\x1b[K"));
+                }
+                buf.push_str(SYNC_END);
+                let _ = self.term.write_all(buf.as_bytes());
+                let _ = self.term.flush();
+            } else {
+                // Filling: cursor up past beacon, print buffer, then beacon again
+                // Just flush all to the beacon's print_final
+                self.buffer.clear();
             }
-            buf.push_str(SYNC_END);
-            let _ = self.term.write_all(buf.as_bytes());
-            let _ = self.term.flush();
         }
         self.clear_pinned();
-        let _ = self.term.write_all(format!("\x1b[{};1H", self.term_height).as_bytes());
-        let _ = self.term.flush();
+        if self.phase == Phase::Pinned {
+            let _ = self.term.write_all(format!("\x1b[{};1H", self.term_height).as_bytes());
+            let _ = self.term.flush();
+        }
         for line in lines {
             let _ = self.term.write_line(line);
         }
         self.show_cursor();
-        self.initialized = false;
+        self.phase = Phase::Filling;
+        self.stream_lines_total = 0;
     }
 
     pub fn hide_cursor(&mut self) {
@@ -281,7 +393,6 @@ impl Drop for Painter {
     }
 }
 
-/// Truncate a line to fit terminal width (respects ANSI escape codes).
 fn truncate_line(line: &str, max_width: u16) -> String {
     let visible_width = console::measure_text_width(line);
     if visible_width <= max_width as usize {
@@ -351,5 +462,11 @@ mod tests {
         assert_eq!(p.buffer.len(), 3);
         p.stream_line("d".into());
         assert_eq!(p.buffer.len(), 4);
+    }
+
+    #[test]
+    fn starts_in_filling_phase() {
+        let p = Painter::new(80, 24, 6);
+        assert_eq!(p.phase, Phase::Filling);
     }
 }
