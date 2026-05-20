@@ -286,6 +286,12 @@ fn row_to_ansi(screen: &vt100::Screen, row: u16, cols: u16) -> String {
             out.push(' ');
             continue;
         };
+        // Wide characters (e.g. ⏱, emoji) occupy 2 cells in the vt100 grid.
+        // The second cell is a "continuation" with no content. Skip it —
+        // the terminal already advances the cursor by 2 for the wide char.
+        if cell.is_wide_continuation() {
+            continue;
+        }
         let attrs = CellAttrs::from_cell(cell);
         if attrs != prev {
             out.push_str(&attrs.sgr_sequence());

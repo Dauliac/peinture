@@ -1,12 +1,12 @@
-//! Demo: beacon with notifications + workload scenarios.
+//! Demo: beacon with varied stream speeds, batch logs, pauses, notifications.
 //!
-//! Simulates a full cimera session:
-//! 1. DevShell entry — notifications arrive (eval, registry, hooks)
-//! 2. Error notification — aws SSO expired
-//! 3. Build starts — workload line appears (yellow)
-//! 4. Notifications keep arriving — oldest scroll off (max 4)
-//! 5. Build completes — workload clears, success notification
-//! 6. Pulse finishes — static beacon printed
+//! Scenarios:
+//! 1. Slow stream (1 line every ~500ms) + notifications arriving
+//! 2. Fast burst (10 lines at once) + notification during burst
+//! 3. Pause (no stream for 2s) + error notification with detail
+//! 4. Medium stream + workload line + notification scroll-off
+//! 5. Another burst + warning notification
+//! 6. Slow down + build completes + pulse finish
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use peinture::component::beacon::{self, BeaconState, Severity};
@@ -22,22 +22,18 @@ fn main() {
     let ctx = OutputContext::detect();
     let theme = if ctx.use_colors() { Theme::default() } else { Theme::plain() };
 
-    println!("=== Beacon Demo: Notifications + Workload ===\n");
+    println!("=== Beacon Demo: Varied Speeds + Notifications ===\n");
 
     if !ctx.use_pinned_region() {
-        let state = demo_final_state();
-        for line in &beacon::render_ci(&state, "cimera") {
-            println!("{line}");
-        }
+        println!("(CI mode — no interactive demo)");
         return;
     }
 
-    // Fast fade for demo
     let mut theme = theme;
-    theme.beacon.notification_ttl_ms = 3_000;
+    theme.beacon.notification_ttl_ms = 4_000;
     theme.beacon.notification_fade_start = 0.85;
 
-    let min_batch = theme.beacon.max_items + 1; // batch fills any notification gap
+    let min_batch = theme.beacon.max_items + 1;
     let mut painter = Painter::new(ctx.term_width, ctx.term_height, min_batch);
     painter.hide_cursor();
     let start = Instant::now();
@@ -45,87 +41,186 @@ fn main() {
 
     let mut state = BeaconState {
         brand: "cimera".into(),
+        phase: Some("Evaluating...".into()),
         is_active: true,
         severity: Severity::Ok,
         ..BeaconState::default()
     };
 
-    // ── Phase 1: DevShell notifications ──────────────────────────
+    // ── Scene 1: Slow stream + notifications arriving ─────────────
+    // 1 line every ~500ms, notifications pop in between
 
-    // Notification: eval started
-    state.phase = Some("Evaluating...".into());
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 30);
+    let slow_logs = [
+        "evaluating attribute 'devShells.x86_64-linux.default'",
+        "evaluating attribute 'packages.x86_64-linux'",
+        "copying path '/nix/store/abc123-source' to remote...",
+        "building '/nix/store/def456-myservice-deps-0.1.0.drv'...",
+        "unpacking sources",
+        "patching sources",
+    ];
 
-    // Notification: eval completed
+    for (i, log) in slow_logs.iter().enumerate() {
+        painter.stream_line(format!("  {log}"));
+
+        // Notification at log 2
+        if i == 2 {
+            state.push_notification(
+                BeaconItem::notification(StatusIcon::Success, "nix evaluation completed").meta("6.2s")
+            );
+        }
+        // Notification at log 4
+        if i == 4 {
+            state.push_notification(
+                BeaconItem::notification(StatusIcon::Success, "task registry refreshed").meta("102 tasks")
+            );
+        }
+
+        // Slow: render ~6 frames per log line (~500ms)
+        for _ in 0..6 {
+            let frame = beacon::render_live(&state, start, &theme);
+            painter.render_frame(&frame.lines);
+            thread::sleep(Duration::from_millis(frame_ms));
+        }
+    }
+
+    // ── Scene 2: Fast burst (10 lines at once) + notification ─────
+    // All 10 lines pushed in one go, then render catches up
+
     state.push_notification(
-        BeaconItem::notification(StatusIcon::Success, "nix evaluation completed").meta("6.2s")
+        BeaconItem::notification(StatusIcon::Success, "loaded hooks: rust, aws, dotenv, oci")
     );
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 25);
 
-    // Notification: registry refreshed
-    state.push_notification(
-        BeaconItem::notification(StatusIcon::Success, "task registry refreshed").meta("102 tasks")
-    );
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 25);
+    let burst_logs = [
+        "configuring", "no configure script, doing nothing",
+        "building", "running build phase",
+        "compiling itoa v1.0.18", "compiling serde v1.0.200",
+        "compiling tokio v1.38.0", "compiling hyper v0.14.28",
+        "compiling myservice v0.1.0", "installing",
+    ];
+    for log in &burst_logs {
+        painter.stream_line(format!("  {log}"));
+    }
 
-    // ── Phase 2: Error notification ──────────────────────────────
+    // Render a few frames to flush the burst
+    for _ in 0..15 {
+        let frame = beacon::render_live(&state, start, &theme);
+        painter.render_frame(&frame.lines);
+        thread::sleep(Duration::from_millis(frame_ms));
+    }
 
-    // Notification: AWS error (red)
+    // ── Scene 3: Pause (no stream, 2s) + error notification ───────
+    // Nothing streams, but an error notification pops in
+
     state.severity = Severity::Warning;
     state.push_notification(
         BeaconItem::notification(StatusIcon::Failed, "aws: SSO session expired")
             .detail("run: aws sso login --profile dev")
     );
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 30);
 
-    // Notification: hooks loaded (success)
-    state.push_notification(
-        BeaconItem::notification(StatusIcon::Success, "loaded hooks: rust, aws, dotenv, oci")
-    );
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 25);
+    // 2 seconds of just beacon pulsing, no stream
+    let pause_frames = (2000 / frame_ms) as usize;
+    for _ in 0..pause_frames {
+        let frame = beacon::render_live(&state, start, &theme);
+        painter.render_frame(&frame.lines);
+        thread::sleep(Duration::from_millis(frame_ms));
+    }
 
-    // ── Phase 3: Build starts — workload line appears ────────────
+    // ── Scene 4: Medium stream + workload + notification scroll-off ──
+    // Stream at ~200ms per line, workload appears, old notifications scroll off
 
     state.phase = Some("Building...".into());
     state.severity = Severity::Ok;
+    state.progress = Some("0/3 tasks".into());
     state.set_workload(
         BeaconItem::workload(StatusIcon::InProgress, "nix build: myservice:rust")
     );
-    state.progress = Some("0/3 tasks".into());
 
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 40);
+    let medium_logs = [
+        "post-installation fixup",
+        "shrinking RPATHs of ELF executables",
+        "checking for references to /build/",
+        "patching script interpreter paths",
+        "stripping (with command strip and target flags -S -p)",
+        "building '/nix/store/ghi789-myservice-0.1.0.drv'...",
+        "running tests",
+        "test result: ok. 42 passed; 0 failed; 0 ignored",
+        "copying path '/nix/store/mno345-myservice-0.1.0' to cache...",
+        "building '/nix/store/pqr012-cli-tools-0.1.0.drv'...",
+    ];
 
-    // ── Phase 4: More notifications push in — oldest scroll off ──
+    for (i, log) in medium_logs.iter().enumerate() {
+        painter.stream_line(format!("  {log}"));
 
-    // 5th notification: should cause the 1st (eval completed) to scroll off
-    state.push_notification(
-        BeaconItem::notification(StatusIcon::Success, "myservice:rust built").meta("12.3s")
-    );
-    state.set_workload(
-        BeaconItem::workload(StatusIcon::InProgress, "nix build: myservice:go")
-    );
-    state.progress = Some("1/3 tasks".into());
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 30);
+        // Notification at log 3: build completed
+        if i == 3 {
+            state.push_notification(
+                BeaconItem::notification(StatusIcon::Success, "myservice:rust built").meta("12.3s")
+            );
+            state.set_workload(
+                BeaconItem::workload(StatusIcon::InProgress, "nix build: myservice:go")
+            );
+            state.progress = Some("1/3 tasks".into());
+        }
 
-    // 6th notification: another one scrolls off
-    state.push_notification(
-        BeaconItem::notification(StatusIcon::Cached, "myservice:go").meta("cached")
-    );
-    state.set_workload(
-        BeaconItem::workload(StatusIcon::InProgress, "nix build: cli-tools:rust")
-    );
-    state.progress = Some("2/3 tasks".into());
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 30);
+        // Notification at log 6: cached
+        if i == 6 {
+            state.push_notification(
+                BeaconItem::notification(StatusIcon::Cached, "myservice:go").meta("cached")
+            );
+            state.set_workload(
+                BeaconItem::workload(StatusIcon::InProgress, "nix build: cli-tools:rust")
+            );
+            state.progress = Some("2/3 tasks".into());
+        }
 
-    // Warning notification
+        // Medium: ~3 frames per line (~250ms)
+        for _ in 0..3 {
+            let frame = beacon::render_live(&state, start, &theme);
+            painter.render_frame(&frame.lines);
+            thread::sleep(Duration::from_millis(frame_ms));
+        }
+    }
+
+    // ── Scene 5: Another burst + warning notification ─────────────
+
     state.push_notification(
         BeaconItem::notification(StatusIcon::Warning, "python: virtualenv outdated")
             .detail("run: cimera sync")
     );
-    render_frames(&mut painter, &state, start, &theme, frame_ms, 30);
 
-    // ── Phase 5: Build completes ─────────────────────────────────
+    let burst2 = [
+        "running install phase", "running fixup phase",
+        "gzip: compressed 64.2%", "running post-install hooks",
+        "querying info about missing paths...",
+        "downloading 'https://cache.nixos.org/nar/abc123.nar.xz'...",
+    ];
+    for log in &burst2 {
+        painter.stream_line(format!("  {log}"));
+    }
 
+    for _ in 0..20 {
+        let frame = beacon::render_live(&state, start, &theme);
+        painter.render_frame(&frame.lines);
+        thread::sleep(Duration::from_millis(frame_ms));
+    }
+
+    // ── Scene 6: Slow wind-down + completion ──────────────────────
+
+    let slow_end = [
+        "copying 12 paths, 48.2 MiB total",
+        "substituting '/nix/store/pqr678-glibc-2.39'...",
+    ];
+
+    for log in &slow_end {
+        painter.stream_line(format!("  {log}"));
+        for _ in 0..8 {
+            let frame = beacon::render_live(&state, start, &theme);
+            painter.render_frame(&frame.lines);
+            thread::sleep(Duration::from_millis(frame_ms));
+        }
+    }
+
+    // Build complete
     state.push_notification(
         BeaconItem::notification(StatusIcon::Success, "cli-tools:rust built").meta("8.1s")
     );
@@ -134,7 +229,18 @@ fn main() {
     state.progress = Some("3 built, 1 cached".into());
     state.elapsed = Some("20.4s".into());
 
-    // Let pulse finish
+    // Let notifications fade and pulse finish
+    let fade_frames = (5000 / frame_ms) as usize;
+    for _ in 0..fade_frames {
+        let frame = beacon::render_live(&state, start, &theme);
+        painter.render_frame(&frame.lines);
+        thread::sleep(Duration::from_millis(frame_ms));
+        if beacon::is_at_rest(start, &theme) && state.items.is_empty() {
+            break;
+        }
+    }
+
+    // Wait for pulse rest
     loop {
         let frame = beacon::render_live(&state, start, &theme);
         painter.render_frame(&frame.lines);
@@ -142,72 +248,8 @@ fn main() {
         if beacon::is_at_rest(start, &theme) { break; }
     }
 
-    // ── Final static beacon ──────────────────────────────────────
-
     state.is_active = false;
     let frame = beacon::render_static(&state, &theme);
     painter.print_final(&frame.lines);
     println!("\n=== Demo complete ===");
-}
-
-static LOG_LINES: &[&str] = &[
-    "evaluating attribute 'devShells.x86_64-linux.default'",
-    "copying path '/nix/store/abc123-source' to remote...",
-    "building '/nix/store/def456-myservice-deps-0.1.0.drv'...",
-    "unpacking sources",
-    "patching sources",
-    "running build phase",
-    "installing",
-    "post-installation fixup",
-    "shrinking RPATHs of ELF executables",
-    "building '/nix/store/ghi789-myservice-0.1.0.drv'...",
-    "running tests",
-    "test result: ok. 42 passed; 0 failed",
-    "copying path '/nix/store/jkl012-myservice-0.1.0' to cache...",
-    "building '/nix/store/mno345-cli-tools-0.1.0.drv'...",
-    "running install phase",
-    "gzip: compressed 64.2%",
-    "querying info about missing paths...",
-    "downloading 'https://cache.nixos.org/nar/abc123.nar.xz'...",
-    "copying 12 paths, 48.2 MiB total",
-    "substituting '/nix/store/pqr678-glibc-2.39'...",
-];
-
-/// Global counter for cycling through log lines.
-static LOG_IDX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn render_frames(
-    painter: &mut Painter,
-    state: &BeaconState,
-    start: Instant,
-    theme: &Theme,
-    frame_ms: u64,
-    count: usize,
-) {
-    for i in 0..count {
-        // Stream a log line every 3 frames
-        if i % 3 == 0 {
-            let idx = LOG_IDX.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LOG_LINES.len();
-            painter.stream_line(format!("  {}", LOG_LINES[idx]));
-        }
-        let frame = beacon::render_live(state, start, theme);
-        painter.render_frame(&frame.lines);
-        thread::sleep(Duration::from_millis(frame_ms));
-    }
-}
-
-fn demo_final_state() -> BeaconState {
-    let mut state = BeaconState {
-        brand: "cimera".into(),
-        phase: Some("Done".into()),
-        progress: Some("3 built, 1 cached".into()),
-        elapsed: Some("20.4s".into()),
-        severity: Severity::Ok,
-        is_active: false,
-        ..BeaconState::default()
-    };
-    state.push_notification(BeaconItem::notification(StatusIcon::Success, "cli-tools:rust built").meta("8.1s"));
-    state.push_notification(BeaconItem::notification(StatusIcon::Cached, "myservice:go").meta("cached"));
-    state.push_notification(BeaconItem::notification(StatusIcon::Success, "myservice:rust built").meta("12.3s"));
-    state
 }
