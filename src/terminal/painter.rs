@@ -62,30 +62,11 @@ impl Painter {
     /// Render a frame: flush stream content in scroll region, redraw beacon below.
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
         let beacon_height = pinned_lines.len() as u16;
-        let height_changed = beacon_height as usize != self.pinned_line_count;
 
-        // Set up or resize scroll region
-        if !self.initialized || height_changed {
-            if height_changed && self.initialized {
-                // Beacon size changed: clear old beacon area, resize scroll region
-                self.clear_beacon_area();
-                self.setup_scroll_region(beacon_height);
-
-                // If beacon shrank (scroll region grew), the newly exposed rows
-                // are blank. Scroll them out by pushing empty lines up.
-                if beacon_height < self.pinned_line_count as u16 {
-                    let new_scroll_bottom = self.term_height.saturating_sub(beacon_height);
-                    let rows_freed = self.pinned_line_count as u16 - beacon_height;
-                    let mut scroll_buf = String::new();
-                    for _ in 0..rows_freed {
-                        scroll_buf.push_str(&format!("\x1b[{new_scroll_bottom};1H\n\x1b[2K"));
-                    }
-                    let _ = self.term.write_all(scroll_buf.as_bytes());
-                    let _ = self.term.flush();
-                }
-            } else {
-                self.setup_scroll_region(beacon_height);
-            }
+        // Set up scroll region once. Beacon height is fixed (padded by the
+        // component) so this only runs on the first frame.
+        if !self.initialized {
+            self.setup_scroll_region(beacon_height);
         }
 
         let scroll_bottom = self.term_height.saturating_sub(beacon_height);
@@ -122,23 +103,6 @@ impl Painter {
         let _ = self.term.flush();
 
         self.pinned_line_count = pinned_lines.len();
-    }
-
-    /// Clear the old beacon area before resizing.
-    fn clear_beacon_area(&mut self) {
-        if self.pinned_line_count == 0 {
-            return;
-        }
-        let old_height = self.pinned_line_count as u16;
-        let old_start = self.term_height.saturating_sub(old_height) + 1;
-        let mut buf = String::new();
-        // Temporarily reset scroll region to access all rows
-        buf.push_str("\x1b[r");
-        for row in old_start..=self.term_height {
-            buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
-        }
-        let _ = self.term.write_all(buf.as_bytes());
-        let _ = self.term.flush();
     }
 
     /// Set up the scroll region: rows 1..scroll_bottom scroll,

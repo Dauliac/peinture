@@ -278,15 +278,30 @@ impl Render for Beacon {
         let header = self.render_header(theme);
         let tree_frame = self.render_tree(theme);
 
+        // Fixed height: max_items + 1 (brand line). Pad with empty lines
+        // so the beacon NEVER changes height. This prevents scroll region
+        // resizes which cause blank lines and rendering artifacts.
+        let total_height = theme.beacon.max_items + 1;
+        let tree_lines = tree_frame.height();
+        let padding = total_height.saturating_sub(tree_lines + 1);
+
         let mut frame = Frame::new();
         match self.orientation {
             Orientation::BottomUp => {
+                // Padding at top (empty slots above tree items)
+                for _ in 0..padding {
+                    frame.push_line(String::new());
+                }
                 frame.extend(&tree_frame);
                 frame.push_line(header);
             }
             Orientation::TopDown => {
                 frame.push_line(header);
                 frame.extend(&tree_frame);
+                // Padding at bottom (empty slots below tree items)
+                for _ in 0..padding {
+                    frame.push_line(String::new());
+                }
             }
         }
         frame
