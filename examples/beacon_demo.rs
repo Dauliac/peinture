@@ -49,25 +49,6 @@ fn main() {
         ..BeaconState::default()
     };
 
-    let nix_logs = [
-        "evaluating attribute 'devShells.x86_64-linux.default'",
-        "copying path '/nix/store/abc123-source' to remote...",
-        "building '/nix/store/def456-myservice-deps-0.1.0.drv'...",
-        "unpacking sources",
-        "patching sources",
-        "running build phase",
-        "installing",
-        "post-installation fixup",
-        "shrinking RPATHs of ELF executables",
-        "building '/nix/store/ghi789-myservice-0.1.0.drv'...",
-        "running tests",
-        "test result: ok. 42 passed; 0 failed",
-        "copying path '/nix/store/jkl012-myservice-0.1.0' to cache...",
-        "building '/nix/store/mno345-cli-tools-0.1.0.drv'...",
-        "running install phase",
-        "gzip: compressed 64.2%",
-    ];
-
     // ── Phase 1: DevShell notifications ──────────────────────────
 
     // Notification: eval started
@@ -111,12 +92,7 @@ fn main() {
     );
     state.progress = Some("0/3 tasks".into());
 
-    // Stream nix build output + render
-    for (i, log) in nix_logs.iter().enumerate() {
-        painter.stream_line(format!("  {log}"));
-        state.elapsed = Some(format!("{:.1}s", i as f32 * 1.2));
-        render_frames(&mut painter, &state, start, &theme, frame_ms, 8);
-    }
+    render_frames(&mut painter, &state, start, &theme, frame_ms, 40);
 
     // ── Phase 4: More notifications push in — oldest scroll off ──
 
@@ -173,6 +149,32 @@ fn main() {
     println!("\n=== Demo complete ===");
 }
 
+static LOG_LINES: &[&str] = &[
+    "evaluating attribute 'devShells.x86_64-linux.default'",
+    "copying path '/nix/store/abc123-source' to remote...",
+    "building '/nix/store/def456-myservice-deps-0.1.0.drv'...",
+    "unpacking sources",
+    "patching sources",
+    "running build phase",
+    "installing",
+    "post-installation fixup",
+    "shrinking RPATHs of ELF executables",
+    "building '/nix/store/ghi789-myservice-0.1.0.drv'...",
+    "running tests",
+    "test result: ok. 42 passed; 0 failed",
+    "copying path '/nix/store/jkl012-myservice-0.1.0' to cache...",
+    "building '/nix/store/mno345-cli-tools-0.1.0.drv'...",
+    "running install phase",
+    "gzip: compressed 64.2%",
+    "querying info about missing paths...",
+    "downloading 'https://cache.nixos.org/nar/abc123.nar.xz'...",
+    "copying 12 paths, 48.2 MiB total",
+    "substituting '/nix/store/pqr678-glibc-2.39'...",
+];
+
+/// Global counter for cycling through log lines.
+static LOG_IDX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn render_frames(
     painter: &mut Painter,
     state: &BeaconState,
@@ -181,7 +183,12 @@ fn render_frames(
     frame_ms: u64,
     count: usize,
 ) {
-    for _ in 0..count {
+    for i in 0..count {
+        // Stream a log line every 3 frames
+        if i % 3 == 0 {
+            let idx = LOG_IDX.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LOG_LINES.len();
+            painter.stream_line(format!("  {}", LOG_LINES[idx]));
+        }
         let frame = beacon::render_live(state, start, theme);
         painter.render_frame(&frame.lines);
         thread::sleep(Duration::from_millis(frame_ms));

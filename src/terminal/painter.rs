@@ -1,11 +1,13 @@
 //! Painter — nom-style terminal renderer with pinned region at bottom.
 //!
-//! Uses save/restore cursor position to avoid line-counting errors:
-//! 1. Restore cursor to where beacon starts
-//! 2. Clear from cursor to end of screen
+//! Each frame (single atomic write with sync update):
+//! 1. Move cursor to start of previous beacon (`\x1b[nF`)
+//! 2. Clear to end of screen (`\x1b[J`)
 //! 3. Print stream content (scrolls into history)
-//! 4. Save cursor position (new beacon start)
-//! 5. Draw beacon
+//! 4. Print beacon (NO trailing newline on last line)
+//!
+//! Cursor ends at the end of the last beacon line.
+//! Next frame moves up by `pinned_count - 1` lines.
 
 use console::Term;
 use std::io::Write;
@@ -14,17 +16,10 @@ use super::sync_update::{SYNC_BEGIN, SYNC_END};
 
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
-/// Save cursor position.
-const CURSOR_SAVE: &str = "\x1b7";
-/// Restore cursor position.
-const CURSOR_RESTORE: &str = "\x1b8";
-/// Clear from cursor to end of screen.
-const CLEAR_TO_END: &str = "\x1b[J";
-
 pub struct Painter {
     term: Term,
-    /// Whether we've saved the initial cursor position.
-    has_saved_position: bool,
+    /// Lines the beacon occupied last frame.
+    pinned_count: usize,
     /// Pending stream lines.
     stream_buffer: Vec<String>,
     cursor_hidden: bool,
@@ -35,7 +30,7 @@ impl Painter {
     pub fn new(term_width: u16) -> Self {
         Self {
             term: Term::stderr(),
-            has_saved_position: false,
+            pinned_count: 0,
             stream_buffer: Vec::new(),
             cursor_hidden: false,
             term_width,
@@ -50,29 +45,32 @@ impl Painter {
         self.stream_buffer.extend(lines);
     }
 
-    /// Render a frame.
+    /// Render a frame (single atomic write).
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
         let mut buf = String::new();
         buf.push_str(SYNC_BEGIN);
 
-        if self.has_saved_position {
-            // Restore to where beacon started last frame
-            buf.push_str(CURSOR_RESTORE);
-            // Clear everything from there to end of screen
-            buf.push_str(CLEAR_TO_END);
+        // 1. Move to start of previous beacon and clear
+        // Cursor is at end of last beacon line (no trailing \n).
+        // \x1b[nF = Cursor Previous Line: up n lines, column 0.
+        if self.pinned_count > 1 {
+            buf.push_str(&format!("\x1b[{}F", self.pinned_count - 1));
+        } else if self.pinned_count == 1 {
+            buf.push('\r'); // just go to column 0 on current line
+        }
+        // Clear from cursor to end of screen (erases old beacon)
+        if self.pinned_count > 0 {
+            buf.push_str("\x1b[J");
         }
 
-        // Print stream content (becomes scrollback)
+        // 2. Print stream content (becomes scrollback)
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
         for line in &drained {
             buf.push_str(line);
             buf.push('\n');
         }
 
-        // Save position — this is where the beacon starts
-        buf.push_str(CURSOR_SAVE);
-
-        // Draw beacon
+        // 3. Draw beacon — NO trailing newline on last line
         for (i, line) in pinned_lines.iter().enumerate() {
             buf.push_str(line);
             if i < pinned_lines.len() - 1 {
@@ -85,19 +83,24 @@ impl Painter {
         let _ = self.term.write_all(buf.as_bytes());
         let _ = self.term.flush();
 
-        self.has_saved_position = true;
+        self.pinned_count = pinned_lines.len();
     }
 
     /// Clear beacon and print final static content.
     pub fn print_final(&mut self, lines: &[String]) {
-        if self.has_saved_position {
+        // Erase beacon
+        if self.pinned_count > 1 {
             let mut buf = String::new();
-            buf.push_str(CURSOR_RESTORE);
-            buf.push_str(CLEAR_TO_END);
+            buf.push_str(&format!("\x1b[{}F", self.pinned_count - 1));
+            buf.push_str("\x1b[J");
             let _ = self.term.write_all(buf.as_bytes());
             let _ = self.term.flush();
-            self.has_saved_position = false;
+        } else if self.pinned_count == 1 {
+            let _ = self.term.write_all(b"\r\x1b[J");
+            let _ = self.term.flush();
         }
+        self.pinned_count = 0;
+
         for line in lines {
             let _ = self.term.write_line(line);
         }
