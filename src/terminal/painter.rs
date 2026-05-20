@@ -70,28 +70,31 @@ impl Painter {
             }
         }
 
-        // ── Phase 2: Write stream lines (become scrollback, not tracked) ──
+        // ── Phase 2 + 3: Write all content (stream + beacon) ──
+        // After erase, cursor sits on the first cleared line (column 0).
+        // The FIRST line of content writes directly there (no \n).
+        // All subsequent lines are preceded by \n.
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
-        let has_stream = !drained.is_empty();
-        for (i, line) in drained.iter().enumerate() {
-            if i == 0 && self.printed_lines > 0 {
-                // First stream line after erased beacon: cursor is on the
-                // first cleared line. Write here, then \n for subsequent.
-                buf.extend_from_slice(line.as_bytes());
-            } else {
-                buf.extend_from_slice(b"\n");
-                buf.extend_from_slice(line.as_bytes());
-            }
-        }
 
-        // ── Phase 3: Write beacon lines ──
-        for (i, line) in beacon_lines.iter().enumerate() {
-            if i == 0 && self.printed_lines == 0 && !has_stream {
-                // Very first frame ever — just write
-            } else {
+        // need_newline: false for the very first line written this frame.
+        // On the first frame ever (printed_lines == 0, no stream), we also
+        // don't need \n because the cursor is already at the right place.
+        let mut need_newline = false;
+
+        for line in &drained {
+            if need_newline {
                 buf.extend_from_slice(b"\n");
             }
             buf.extend_from_slice(line.as_bytes());
+            need_newline = true;
+        }
+
+        for line in beacon_lines.iter() {
+            if need_newline {
+                buf.extend_from_slice(b"\n");
+            }
+            buf.extend_from_slice(line.as_bytes());
+            need_newline = true;
         }
 
         // ── End synchronized update ──
