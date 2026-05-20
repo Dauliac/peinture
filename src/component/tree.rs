@@ -134,12 +134,20 @@ impl Render for Tree {
             let semantic = item.color_override.unwrap_or_else(|| semantic_for_status(item.status));
             let base_color = semantic.resolve(&theme.palette);
 
-            // Fade uses the terminal's native dim attribute (\x1b[2m)
-            // instead of RGB lerp — this preserves the user's terminal
-            // color theme and avoids ugly color jumps.
+            // 3-stage fade: full color → dim → dark grey → removed
+            // fade 0.0–0.66: dim attribute (terminal's native dimming)
+            // fade 0.66–1.0: dark grey (last 1/3 of fade)
             let fade = item.fade_factor;
-            let dim_prefix = if fade > 0.2 { "\x1b[2m" } else { "" };
-            let icon_color = base_color;
+            let (dim_prefix, icon_color) = if fade > 0.66 {
+                // Dark grey phase (last 1/3)
+                let grey = crate::tokens::Color::Rgb(80, 80, 80);
+                ("\x1b[2m", grey)
+            } else if fade > 0.0 {
+                // Dim phase (first 2/3)
+                ("\x1b[2m", base_color)
+            } else {
+                ("", base_color)
+            };
             let msg_color = icon_color;
 
             let main = if let Some(ref meta) = item.metadata {
