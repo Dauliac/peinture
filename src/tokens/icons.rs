@@ -129,8 +129,9 @@ impl TreeChars {
     }
 
     /// Continuation line prefix for a bottom-rooted tree.
-    pub fn continuation_bottom_rooted(&self, is_first: bool) -> &str {
-        if is_first { &self.blank } else { &self.vertical }
+    /// Always │ — all items connect down to the root (brand line).
+    pub fn continuation_bottom_rooted(&self, _is_first: bool) -> &str {
+        &self.vertical
     }
 }
 

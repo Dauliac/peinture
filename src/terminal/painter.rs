@@ -86,21 +86,62 @@ impl Painter {
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
             self.initialized = true;
         } else if new_height != old_height {
-            // Beacon height changed — resize scroll region
-            buf.push_str("\x1b[r"); // reset
+            // Beacon height changed — reset scroll region temporarily
+            buf.push_str("\x1b[r");
+
+            // Overwrite the OLD beacon area directly:
+            // - freed rows (top) → stream buffer lines
+            // - remaining rows (bottom) → new beacon content
+            // NO \x1b[2K — old content is overwritten char-by-char.
             let old_start = self.term_height.saturating_sub(old_height) + 1;
-            for row in old_start..=self.term_height {
-                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+            let new_start = self.term_height.saturating_sub(new_height) + 1;
+            let mut row = old_start;
+
+            // Freed rows: fill with stream buffer lines (gap fill)
+            let gap_lines = &flushed[..gap.min(flushed.len())];
+            for line in gap_lines {
+                buf.push_str(&format!("\x1b[{row};1H{line}\x1b[K"));
+                row += 1;
             }
+            // If buffer was empty, clear freed rows
+            while row < new_start {
+                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+                row += 1;
+            }
+
+            // Beacon rows: overwrite with new content
+            for (i, line) in pinned_lines.iter().enumerate() {
+                let r = new_start + i as u16;
+                buf.push_str(&format!("\x1b[{r};1H{line}\x1b[K"));
+            }
+
+            // Set new scroll region
             let scroll_bottom = self.term_height.saturating_sub(new_height);
             buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+
+            // Remaining flushed lines (beyond gap) go to scroll region
+            let remaining = &flushed[gap.min(flushed.len())..];
+            if !remaining.is_empty() {
+                buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+                for line in remaining {
+                    buf.push_str(&format!("\n{line}\x1b[K"));
+                }
+            }
+
+            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+            buf.push_str(SYNC_END);
+
+            let _ = self.term.write_all(buf.as_bytes());
+            let _ = self.term.flush();
+            self.pinned_line_count = pinned_lines.len();
+            return;
         }
 
         let scroll_bottom = self.term_height.saturating_sub(new_height);
         let pinned_start = scroll_bottom + 1;
 
-        // Stream: flush lines into scroll region
+        // Normal frame (no height change): flush overflow to scroll region
         if !flushed.is_empty() {
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
             for line in &flushed {
@@ -108,7 +149,7 @@ impl Painter {
             }
         }
 
-        // Beacon: absolute positioning
+        // Beacon: absolute positioning (overwrite, no clear)
         for (i, line) in pinned_lines.iter().enumerate() {
             let row = pinned_start + i as u16;
             buf.push_str(&format!("\x1b[{row};1H{line}\x1b[K"));
