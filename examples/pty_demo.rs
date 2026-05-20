@@ -27,7 +27,8 @@ use peinture::terminal::pty_capture::PtyCapture;
 use peinture::tokens::Theme;
 use peinture::tokens::icons::StatusIcon;
 use std::io::Write;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use std::thread;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -46,20 +47,25 @@ fn main() {
         std::process::exit(1);
     }
 
-    let theme = Theme::default();
+    let theme = if ctx.use_colors() { Theme::default() } else { Theme::plain() };
     let cmd_display = args.join(" ");
+    let frame_ms = theme.beacon.frame_interval_ms();
 
     let mut state = BeaconState {
-        brand: "peinture".into(),
+        brand: "cimera".into(),
         phase: Some("Running...".into()),
         is_active: true,
         severity: Severity::Ok,
-        items: vec![BeaconItem::workload(StatusIcon::InProgress, cmd_display.clone())],
         ..BeaconState::default()
     };
+    state.set_workload(
+        BeaconItem::workload(StatusIcon::InProgress, &cmd_display),
+    );
 
     // Compute beacon height to size the virtual terminal.
-    let beacon_height = beacon::render_live(&state, Instant::now(), &theme)
+    // Use max_items + 1 to reserve space for a full notification stack.
+    let probe_state = beacon_probe_state(&theme);
+    let beacon_height = beacon::render_live(&probe_state, Instant::now(), &theme)
         .lines
         .len() as u16;
     let capture_rows = ctx.term_height.saturating_sub(beacon_height).max(4);
@@ -93,35 +99,31 @@ fn main() {
 
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
 
-        // Get captured screen + beacon lines.
         let screen = capture.screen_lines();
         let beacon_frame = beacon::render_live(&state, start, &theme);
-
-        // Render: absolute cursor positioning, no scroll region, no Painter.
-        // Each frame overwrites the same rows in place.
         render_fullscreen(&screen, &beacon_frame.lines, ctx.term_height);
 
         if !running {
             break;
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(
-            theme.beacon.frame_interval_ms(),
-        ));
+        thread::sleep(Duration::from_millis(frame_ms));
     }
 
-    // ─── Completion: let pulse finish ────────────────────────────────────
+    // ─── Completion: workload done, push success notification ────────────
+    state.clear_workload();
     state.phase = Some("Done".into());
-    state.items[0].status = StatusIcon::Success;
-    state.items[0].metadata = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
+    state.push_notification(
+        BeaconItem::notification(StatusIcon::Success, &cmd_display)
+            .meta(format!("{:.1}s", start.elapsed().as_secs_f64())),
+    );
 
+    // Let pulse finish its cycle.
     loop {
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
         let beacon_frame = beacon::render_live(&state, start, &theme);
         render_fullscreen(&[], &beacon_frame.lines, ctx.term_height);
-        std::thread::sleep(std::time::Duration::from_millis(
-            theme.beacon.frame_interval_ms(),
-        ));
+        thread::sleep(Duration::from_millis(frame_ms));
         if beacon::is_at_rest(start, &theme) {
             break;
         }
@@ -132,15 +134,32 @@ fn main() {
     let frame = beacon::render_static(&state, &theme);
 
     let mut buf = String::new();
-    // Reset scroll region, clear screen, move to top.
     buf.push_str("\x1b[r\x1b[2J\x1b[1;1H");
     for line in &frame.lines {
         buf.push_str(line);
         buf.push('\n');
     }
-    buf.push_str("\x1b[?25h"); // show cursor
+    buf.push_str("\x1b[?25h");
     let _ = std::io::stderr().write_all(buf.as_bytes());
     let _ = std::io::stderr().flush();
+}
+
+/// Build a probe state with max items to measure worst-case beacon height.
+fn beacon_probe_state(theme: &Theme) -> BeaconState {
+    let mut s = BeaconState {
+        brand: "cimera".into(),
+        phase: Some("x".into()),
+        progress: Some("x".into()),
+        elapsed: Some("x".into()),
+        is_active: true,
+        severity: Severity::Ok,
+        ..BeaconState::default()
+    };
+    for _ in 0..theme.beacon.max_items {
+        s.push_notification(BeaconItem::notification(StatusIcon::InProgress, "x"));
+    }
+    s.set_workload(BeaconItem::workload(StatusIcon::InProgress, "x"));
+    s
 }
 
 /// Render the full terminal: captured screen at the top, beacon at the bottom.
@@ -176,7 +195,7 @@ fn render_fullscreen(screen_lines: &[String], beacon_lines: &[String], term_heig
         buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
     }
 
-    // Park cursor out of the way (bottom-right).
+    // Park cursor out of the way.
     buf.push_str(&format!("\x1b[{term_height};1H"));
 
     // End synchronized update.
@@ -188,7 +207,6 @@ fn render_fullscreen(screen_lines: &[String], beacon_lines: &[String], term_heig
 
 fn install_cleanup_hook() {
     let _ = ctrlc::set_handler(move || {
-        // Reset scroll region + show cursor + clear screen.
         let _ = std::io::stderr().write_all(b"\x1b[r\x1b[?25h\x1b[2J\x1b[1;1H");
         let _ = std::io::stderr().flush();
         std::process::exit(130);
