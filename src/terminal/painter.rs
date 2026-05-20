@@ -1,16 +1,17 @@
-//! Painter — nom-style terminal renderer.
+//! Painter — scroll region renderer (the approach that worked without blink).
 //!
-//! Follows the exact algorithm from nix-output-monitor:
-//! 1. Begin synchronized update (\x1b[?2026h)
-//! 2. Go to column 0 (if previous output was 1 line)
-//! 3. Clear current line
-//! 4. Move up + clear, repeated for each previous line
-//! 5. Write all new content (stream lines + beacon lines)
-//! 6. End synchronized update (\x1b[?2026l)
-//! 7. Single write() syscall for the entire frame
+//! The terminal is split into two zones:
+//! - **Scroll region** (rows 1..scroll_bottom): stream content scrolls here
+//! - **Beacon area** (rows scroll_bottom+1..term_height): redrawn with absolute positioning
 //!
-//! `printed_lines` only tracks the BEACON line count.
-//! Stream lines scroll into scrollback and are not tracked.
+//! The beacon area is OUTSIDE the scroll region — it never scrolls,
+//! never blinks. Each frame just overwrites each beacon line at its
+//! absolute row position.
+//!
+//! When beacon height changes (notification added/removed):
+//! - Resize the scroll region in the same synchronized frame
+//! - Clear any freed rows
+//! - No blink because everything is in one atomic write
 
 use console::Term;
 use std::io::Write;
@@ -21,22 +22,24 @@ static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 pub struct Painter {
     term: Term,
-    /// Number of BEACON lines printed last frame (not stream lines).
-    printed_lines: usize,
-    /// Pending stream lines.
+    pinned_line_count: usize,
     stream_buffer: Vec<String>,
     cursor_hidden: bool,
     term_width: u16,
+    term_height: u16,
+    initialized: bool,
 }
 
 impl Painter {
-    pub fn new(term_width: u16) -> Self {
+    pub fn new(term_width: u16, term_height: u16) -> Self {
         Self {
             term: Term::stderr(),
-            printed_lines: 0,
+            pinned_line_count: 0,
             stream_buffer: Vec::new(),
             cursor_hidden: false,
             term_width,
+            term_height,
+            initialized: false,
         }
     }
 
@@ -48,97 +51,93 @@ impl Painter {
         self.stream_buffer.extend(lines);
     }
 
-    /// Render a frame — nom algorithm, single write syscall.
-    pub fn render_frame(&mut self, beacon_lines: &[String]) {
-        let mut buf = Vec::<u8>::with_capacity(4096);
+    /// Render a frame — single atomic write, no blink.
+    pub fn render_frame(&mut self, pinned_lines: &[String]) {
+        let new_height = pinned_lines.len() as u16;
+        let old_height = self.pinned_line_count as u16;
 
-        // ── Begin synchronized update ──
-        buf.extend_from_slice(SYNC_BEGIN.as_bytes());
+        let mut buf = String::with_capacity(4096);
+        buf.push_str(SYNC_BEGIN);
 
-        // ── Phase 1: Move cursor to first beacon line ──
-        // Only go up by the OLD printed_lines count — never touch stream content above.
-        if self.printed_lines == 1 {
-            buf.extend_from_slice(b"\x1b[G");   // go to column 0
-        } else if self.printed_lines > 1 {
-            buf.extend_from_slice(b"\x1b[G");   // column 0
-            for _ in 0..(self.printed_lines - 1) {
-                buf.extend_from_slice(b"\x1b[F"); // cursor previous line
+        // First frame: initialize scroll region
+        if !self.initialized {
+            // Push existing content up
+            for _ in 0..self.term_height {
+                buf.push('\n');
             }
-        }
-        // DON'T clear lines here — content will be overwritten below.
-        // \x1b[K after each line cleans any trailing garbage.
-
-        // ── Phase 2 + 3: Write all content (stream + beacon) ──
-        // After erase, cursor sits on the first cleared line (column 0).
-        // The FIRST line of content writes directly there (no \n).
-        // All subsequent lines are preceded by \n.
-        let drained: Vec<String> = self.stream_buffer.drain(..).collect();
-
-        // need_newline: false for the very first line written this frame.
-        // On the first frame ever (printed_lines == 0, no stream), we also
-        // don't need \n because the cursor is already at the right place.
-        let mut need_newline = false;
-
-        for line in &drained {
-            if need_newline {
-                buf.extend_from_slice(b"\n");
+            let scroll_bottom = self.term_height.saturating_sub(new_height);
+            buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
+            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+            self.initialized = true;
+        } else if new_height != old_height {
+            // Beacon height changed: resize scroll region in same frame.
+            // First clear old beacon area (using full terminal, no scroll region)
+            buf.push_str("\x1b[r"); // reset scroll region temporarily
+            let old_start = self.term_height.saturating_sub(old_height) + 1;
+            for row in old_start..=self.term_height {
+                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
             }
-            buf.extend_from_slice(line.as_bytes());
-            buf.extend_from_slice(b"\x1b[K"); // clear trailing garbage
-            need_newline = true;
+            // Set new scroll region
+            let scroll_bottom = self.term_height.saturating_sub(new_height);
+            buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
+            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
         }
 
-        for line in beacon_lines.iter() {
-            if need_newline {
-                buf.extend_from_slice(b"\n");
-            }
-            buf.extend_from_slice(line.as_bytes());
-            buf.extend_from_slice(b"\x1b[K"); // clear trailing garbage
-            need_newline = true;
-        }
+        let scroll_bottom = self.term_height.saturating_sub(new_height);
+        let pinned_start = scroll_bottom + 1;
 
-        // ── Phase 4: If beacon shrank, clear leftover lines below ──
-        let new_count = beacon_lines.len();
-        let total_written = drained.len() + new_count;
-        if self.printed_lines > total_written {
-            let leftover = self.printed_lines - total_written;
-            for _ in 0..leftover {
-                buf.extend_from_slice(b"\n\x1b[2K");
-            }
-            // Move back up so cursor stays on last beacon line
-            if leftover > 0 {
-                buf.extend_from_slice(format!("\x1b[{}A", leftover).as_bytes());
+        // Stream content: print in scroll region (scrolls naturally)
+        if !self.stream_buffer.is_empty() {
+            let drained: Vec<String> = self.stream_buffer.drain(..).collect();
+            buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+            for line in &drained {
+                buf.push_str(&format!("\n{line}\x1b[K"));
             }
         }
 
-        // ── End synchronized update ──
-        buf.extend_from_slice(SYNC_END.as_bytes());
+        // Beacon: overwrite at absolute positions (outside scroll region, never scrolls)
+        for (i, line) in pinned_lines.iter().enumerate() {
+            let row = pinned_start + i as u16;
+            buf.push_str(&format!("\x1b[{row};1H{line}\x1b[K"));
+        }
 
-        // ── Single write syscall ──
-        let _ = self.term.write_all(&buf);
+        // Park cursor in scroll region
+        buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
+
+        buf.push_str(SYNC_END);
+
+        let _ = self.term.write_all(buf.as_bytes());
         let _ = self.term.flush();
 
-        self.printed_lines = new_count;
+        self.pinned_line_count = pinned_lines.len();
     }
 
-    /// Clear beacon and print final static content.
-    pub fn print_final(&mut self, lines: &[String]) {
-        // Erase current beacon
-        if self.printed_lines > 0 {
-            let mut buf = Vec::<u8>::new();
-            buf.extend_from_slice(b"\x1b[2K");
-            for _ in 0..self.printed_lines.saturating_sub(1) {
-                buf.extend_from_slice(b"\x1b[F\x1b[2K");
+    pub fn clear_pinned(&mut self) {
+        if self.pinned_line_count > 0 {
+            let old_start = self.term_height.saturating_sub(self.pinned_line_count as u16) + 1;
+            let mut buf = String::new();
+            buf.push_str(SYNC_BEGIN);
+            for row in old_start..=self.term_height {
+                buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
             }
-            let _ = self.term.write_all(&buf);
+            buf.push_str(SYNC_END);
+            let _ = self.term.write_all(buf.as_bytes());
             let _ = self.term.flush();
-            self.printed_lines = 0;
+            self.pinned_line_count = 0;
         }
-        // Print final content as normal scrollback
+        let _ = self.term.write_all(b"\x1b[r");
+        let _ = self.term.flush();
+    }
+
+    pub fn print_final(&mut self, lines: &[String]) {
+        self.clear_pinned();
+        let _ = self.term.write_all(format!("\x1b[{};1H", self.term_height).as_bytes());
+        let _ = self.term.flush();
         for line in lines {
             let _ = self.term.write_line(line);
         }
         self.show_cursor();
+        self.initialized = false;
     }
 
     pub fn hide_cursor(&mut self) {
@@ -158,8 +157,10 @@ impl Painter {
         }
     }
 
-    pub fn set_width(&mut self, width: u16) {
+    pub fn set_size(&mut self, width: u16, height: u16) {
         self.term_width = width;
+        self.term_height = height;
+        self.initialized = false;
     }
 
     pub fn count_wrapped_lines(&self, line: &str) -> usize {
@@ -172,7 +173,9 @@ impl Painter {
 
 impl Drop for Painter {
     fn drop(&mut self) {
-        self.show_cursor();
+        let _ = self.term.write_all(b"\x1b[r\x1b[?25h");
+        let _ = self.term.flush();
+        self.cursor_hidden = false;
     }
 }
 
@@ -181,7 +184,7 @@ fn install_cursor_restore_hook() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = ctrlc::set_handler(move || {
-            let _ = std::io::stderr().write_all(b"\x1b[?25h");
+            let _ = std::io::stderr().write_all(b"\x1b[r\x1b[?25h");
             let _ = std::io::stderr().flush();
             std::process::exit(130);
         });
@@ -194,19 +197,19 @@ mod tests {
 
     #[test]
     fn count_wrapped_lines_short() {
-        let p = Painter::new(80);
+        let p = Painter::new(80, 24);
         assert_eq!(p.count_wrapped_lines("hello"), 1);
     }
 
     #[test]
     fn count_wrapped_lines_long() {
-        let p = Painter::new(10);
+        let p = Painter::new(10, 24);
         assert_eq!(p.count_wrapped_lines("12345678901234567890"), 2);
     }
 
     #[test]
     fn count_wrapped_lines_empty() {
-        let p = Painter::new(80);
+        let p = Painter::new(80, 24);
         assert_eq!(p.count_wrapped_lines(""), 1);
     }
 }
