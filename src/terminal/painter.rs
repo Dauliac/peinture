@@ -102,25 +102,19 @@ impl Painter {
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));
             self.initialized = true;
 
-        // ── Path 2: Resize (clear old beacon, set new scroll region) ──
+        // ── Path 2: Resize ──
+        // Don't clear content rows — terminal already reflowed them.
+        // Just reset scroll region, set new one, draw beacon at new position.
+        // Old beacon text becomes part of scroll region and scrolls away.
         } else if resized {
-            // Reset scroll region to access all rows
-            buf.push_str("\x1b[r");
+            buf.push_str("\x1b[r"); // reset scroll region
 
-            // Clear old beacon at its OLD position
-            let old_beacon_start = self.prev_term_height.saturating_sub(old_height) + 1;
-            for row in old_beacon_start..=self.prev_term_height {
+            // Only clear the NEW beacon area (where we're about to draw)
+            let new_beacon_start = self.term_height.saturating_sub(new_height) + 1;
+            for row in new_beacon_start..=self.term_height {
                 buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
             }
 
-            // If terminal grew: clear new rows that might have artifacts
-            if self.term_height > self.prev_term_height {
-                for row in (self.prev_term_height + 1)..=self.term_height {
-                    buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
-                }
-            }
-
-            // Set new scroll region
             let scroll_bottom = self.term_height.saturating_sub(new_height);
             buf.push_str(&format!("\x1b[1;{scroll_bottom}r"));
             buf.push_str(&format!("\x1b[{scroll_bottom};1H"));

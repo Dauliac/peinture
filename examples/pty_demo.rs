@@ -98,11 +98,6 @@ fn main() {
             painter.hide_cursor();
         }
 
-        // Drain scrollback → stream zone (scrolls into real terminal scrollback).
-        for line in capture.drain_scrollback() {
-            painter.stream_line(line);
-        }
-
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
 
         // Build pinned frame: captured screen + beacon.
