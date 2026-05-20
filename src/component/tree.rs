@@ -135,10 +135,10 @@ impl Render for Tree {
             let base_color = semantic.resolve(&theme.palette);
 
             // 3-stage fade: full color → dim → dark grey → removed
-            // fade 0.0–0.5: dim attribute (terminal's native dimming)
-            // fade 0.5–1.0: dark grey, NO dim (color speaks for itself)
+            // fade 0.0–0.6: dim attribute (terminal's native dimming)
+            // fade 0.6–1.0: dark grey, NO dim (color speaks for itself)
             let fade = item.fade_factor;
-            let (dim_prefix, icon_color) = if fade > 0.5 {
+            let (dim_prefix, icon_color) = if fade > 0.6 {
                 // Dark grey phase (last half) — no dim, just grey color
                 let grey = crate::tokens::Color::Rgb(70, 70, 70);
                 ("", grey)
