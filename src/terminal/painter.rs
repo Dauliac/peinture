@@ -46,7 +46,11 @@ impl Painter {
     }
 
     /// Render a frame (single atomic write).
-    /// Render a frame — overwrite in place, no bulk erase.
+    /// Render a frame — overwrite then clear trailing (nom-style).
+    ///
+    /// Never blanks a line before writing. Content overwrites old content
+    /// in place, then `\x1b[K` clears only the trailing remainder.
+    /// No visible flash even without synchronized update support.
     pub fn render_frame(&mut self, pinned_lines: &[String]) {
         let old_count = self.pinned_count;
         let new_count = pinned_lines.len();
@@ -61,15 +65,20 @@ impl Painter {
             buf.push('\r');
         }
 
-        // 2. Stream lines: each one scrolls old content up naturally.
+        // 2. Stream lines: overwrite + clear trailing + newline.
+        //    The \n scrolls old beacon content up into scrollback.
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
         for line in &drained {
-            buf.push_str(&format!("\x1b[2K{line}\n"));
+            buf.push_str(line);
+            buf.push_str("\x1b[K\n"); // clear rest of line, then newline
         }
 
-        // 3. Overwrite beacon lines in place — per-line clear, no bulk erase.
+        // 3. Overwrite beacon lines — write content, THEN clear trailing.
+        //    Old content is overwritten char-by-char, never blanked first.
         for (i, line) in pinned_lines.iter().enumerate() {
-            buf.push_str(&format!("\x1b[2K{line}"));
+            buf.push('\r');          // go to column 0
+            buf.push_str(line);      // overwrite old content
+            buf.push_str("\x1b[K");  // clear anything remaining after
             if i < new_count - 1 {
                 buf.push('\n');
             }
@@ -80,7 +89,6 @@ impl Painter {
             for _ in 0..(old_count - new_count) {
                 buf.push_str("\n\x1b[2K");
             }
-            // Move back up to end of last beacon line
             buf.push_str(&format!("\x1b[{}F", old_count - new_count));
         }
 
