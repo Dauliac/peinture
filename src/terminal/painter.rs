@@ -50,27 +50,23 @@ impl Painter {
 
     /// Render a frame — nom algorithm, single write syscall.
     pub fn render_frame(&mut self, beacon_lines: &[String]) {
-        let new_count = beacon_lines.len();
-        // Clear the max of old and new height — ensures no leftover content
-        // when beacon grows (new lines would overwrite old stream text).
-        let clear_count = self.printed_lines.max(new_count);
-
         let mut buf = Vec::<u8>::with_capacity(4096);
 
         // ── Begin synchronized update ──
         buf.extend_from_slice(SYNC_BEGIN.as_bytes());
 
-        // ── Phase 1: Erase lines (go up + clear) ──
-        if clear_count == 1 {
-            buf.extend_from_slice(b"\x1b[G");   // setCursorColumn 0
-            buf.extend_from_slice(b"\x1b[2K");  // clearLine
-        } else if clear_count > 1 {
-            buf.extend_from_slice(b"\x1b[2K");  // clear current line
-            for _ in 0..(clear_count - 1) {
+        // ── Phase 1: Move cursor to first beacon line ──
+        // Only go up by the OLD printed_lines count — never touch stream content above.
+        if self.printed_lines == 1 {
+            buf.extend_from_slice(b"\x1b[G");   // go to column 0
+        } else if self.printed_lines > 1 {
+            buf.extend_from_slice(b"\x1b[G");   // column 0
+            for _ in 0..(self.printed_lines - 1) {
                 buf.extend_from_slice(b"\x1b[F"); // cursor previous line
-                buf.extend_from_slice(b"\x1b[2K"); // clearLine
             }
         }
+        // DON'T clear lines here — content will be overwritten below.
+        // \x1b[K after each line cleans any trailing garbage.
 
         // ── Phase 2 + 3: Write all content (stream + beacon) ──
         // After erase, cursor sits on the first cleared line (column 0).
@@ -101,6 +97,20 @@ impl Painter {
             need_newline = true;
         }
 
+        // ── Phase 4: If beacon shrank, clear leftover lines below ──
+        let new_count = beacon_lines.len();
+        let total_written = drained.len() + new_count;
+        if self.printed_lines > total_written {
+            let leftover = self.printed_lines - total_written;
+            for _ in 0..leftover {
+                buf.extend_from_slice(b"\n\x1b[2K");
+            }
+            // Move back up so cursor stays on last beacon line
+            if leftover > 0 {
+                buf.extend_from_slice(format!("\x1b[{}A", leftover).as_bytes());
+            }
+        }
+
         // ── End synchronized update ──
         buf.extend_from_slice(SYNC_END.as_bytes());
 
@@ -108,7 +118,7 @@ impl Painter {
         let _ = self.term.write_all(&buf);
         let _ = self.term.flush();
 
-        self.printed_lines = beacon_lines.len();
+        self.printed_lines = new_count;
     }
 
     /// Clear beacon and print final static content.
