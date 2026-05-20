@@ -188,6 +188,27 @@ impl PtyCapture {
             .collect()
     }
 
+    /// Number of non-empty rows on the virtual screen (from the top).
+    ///
+    /// Useful for compact rendering: only show the rows the captured
+    /// program actually wrote to, so the beacon follows the content.
+    pub fn active_rows(&self) -> usize {
+        let screen = self.parser.screen();
+        let mut last_nonempty = 0;
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                if let Some(cell) = screen.cell(row, col) {
+                    let c = cell.contents();
+                    if !c.is_empty() && c != " " {
+                        last_nonempty = row as usize + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        last_nonempty
+    }
+
     /// Get the current virtual screen as plain text lines (no ANSI codes).
     pub fn screen_lines_plain(&self) -> Vec<String> {
         let contents = self.parser.screen().contents();

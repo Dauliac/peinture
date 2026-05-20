@@ -1,10 +1,14 @@
 //! Demo: capture a screen-rewriting program via PTY and overlay a peinture
 //! beacon below it.
 //!
-//! Layout:
+//! The beacon follows the captured content — it starts near the top and
+//! moves down as the program fills the screen, just like `beacon_demo`.
+//!
+//! Layout (grows over time):
 //!   ─── top of terminal ───
-//!   captured program screen     ← vt100 virtual terminal, redrawn in place
-//!   beacon                      ← peinture beacon, redrawn in place
+//!   captured program screen     ← only active (non-empty) rows
+//!   beacon                      ← right below, moves down as content grows
+//!   (empty space)
 //!   ─── bottom of terminal ───
 //!
 //! Usage:
@@ -62,8 +66,7 @@ fn main() {
         BeaconItem::workload(StatusIcon::InProgress, &cmd_display),
     );
 
-    // Compute beacon height to size the virtual terminal.
-    // Use max_items + 1 to reserve space for a full notification stack.
+    // Reserve space for beacon at max capacity.
     let probe_state = beacon_probe_state(&theme);
     let beacon_height = beacon::render_live(&probe_state, Instant::now(), &theme)
         .lines
@@ -77,7 +80,6 @@ fn main() {
             std::process::exit(1);
         });
 
-    // Hide cursor and install ctrlc handler to restore it.
     let _ = std::io::stderr().write_all(b"\x1b[?25l");
     let _ = std::io::stderr().flush();
     install_cleanup_hook();
@@ -99,9 +101,13 @@ fn main() {
 
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
 
+        // Only render active (non-empty) rows — beacon follows the content.
         let screen = capture.screen_lines();
+        let active = capture.active_rows();
+        let active_screen = &screen[..active];
         let beacon_frame = beacon::render_live(&state, start, &theme);
-        render_fullscreen(&screen, &beacon_frame.lines, ctx.term_height);
+
+        render_compact(active_screen, &beacon_frame.lines, ctx.term_height);
 
         if !running {
             break;
@@ -110,7 +116,7 @@ fn main() {
         thread::sleep(Duration::from_millis(frame_ms));
     }
 
-    // ─── Completion: workload done, push success notification ────────────
+    // ─── Completion ──────────────────────────────────────────────────────
     state.clear_workload();
     state.phase = Some("Done".into());
     state.push_notification(
@@ -118,11 +124,10 @@ fn main() {
             .meta(format!("{:.1}s", start.elapsed().as_secs_f64())),
     );
 
-    // Let pulse finish its cycle.
     loop {
         state.elapsed = Some(format!("{:.1}s", start.elapsed().as_secs_f64()));
         let beacon_frame = beacon::render_live(&state, start, &theme);
-        render_fullscreen(&[], &beacon_frame.lines, ctx.term_height);
+        render_compact(&[], &beacon_frame.lines, ctx.term_height);
         thread::sleep(Duration::from_millis(frame_ms));
         if beacon::is_at_rest(start, &theme) {
             break;
@@ -144,6 +149,46 @@ fn main() {
     let _ = std::io::stderr().flush();
 }
 
+/// Render content + beacon as a compact block starting from row 1.
+/// The beacon sits right below the active content and moves down as
+/// the content grows — empty space stays below.
+fn render_compact(screen_lines: &[String], beacon_lines: &[String], term_height: u16) {
+    let mut buf = String::with_capacity(4096);
+    buf.push_str("\x1b[?2026h");
+
+    let mut row: u16 = 1;
+
+    // Active captured screen lines.
+    for line in screen_lines {
+        if row > term_height {
+            break;
+        }
+        buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
+        row += 1;
+    }
+
+    // Beacon right below.
+    for line in beacon_lines {
+        if row > term_height {
+            break;
+        }
+        buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
+        row += 1;
+    }
+
+    // Clear remaining rows below.
+    while row <= term_height {
+        buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
+        row += 1;
+    }
+
+    buf.push_str(&format!("\x1b[{term_height};1H"));
+    buf.push_str("\x1b[?2026l");
+
+    let _ = std::io::stderr().write_all(buf.as_bytes());
+    let _ = std::io::stderr().flush();
+}
+
 /// Build a probe state with max items to measure worst-case beacon height.
 fn beacon_probe_state(theme: &Theme) -> BeaconState {
     let mut s = BeaconState {
@@ -160,49 +205,6 @@ fn beacon_probe_state(theme: &Theme) -> BeaconState {
     }
     s.set_workload(BeaconItem::workload(StatusIcon::InProgress, "x"));
     s
-}
-
-/// Render the full terminal: captured screen at the top, beacon at the bottom.
-/// Uses synchronized updates and absolute cursor positioning — no scroll region.
-fn render_fullscreen(screen_lines: &[String], beacon_lines: &[String], term_height: u16) {
-    let mut buf = String::with_capacity(4096);
-
-    // Synchronized update: hold display until frame is complete.
-    buf.push_str("\x1b[?2026h");
-
-    // Draw captured screen lines starting at row 1.
-    for (i, line) in screen_lines.iter().enumerate() {
-        let row = i as u16 + 1;
-        if row > term_height {
-            break;
-        }
-        buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
-    }
-
-    // Draw beacon lines at the bottom.
-    let beacon_start = term_height.saturating_sub(beacon_lines.len() as u16) + 1;
-    for (i, line) in beacon_lines.iter().enumerate() {
-        let row = beacon_start + i as u16;
-        if row > term_height {
-            break;
-        }
-        buf.push_str(&format!("\x1b[{row};1H\x1b[2K{line}"));
-    }
-
-    // Clear any gap between screen and beacon.
-    let screen_end = screen_lines.len() as u16 + 1;
-    for row in screen_end..beacon_start {
-        buf.push_str(&format!("\x1b[{row};1H\x1b[2K"));
-    }
-
-    // Park cursor out of the way.
-    buf.push_str(&format!("\x1b[{term_height};1H"));
-
-    // End synchronized update.
-    buf.push_str("\x1b[?2026l");
-
-    let _ = std::io::stderr().write_all(buf.as_bytes());
-    let _ = std::io::stderr().flush();
 }
 
 fn install_cleanup_hook() {

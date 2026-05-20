@@ -147,9 +147,10 @@ impl Painter {
 
         self.pinned_line_count = pinned_lines.len();
 
-        // Check transition: screen full?
-        let total = self.stream_lines_total + self.pinned_line_count;
-        if total >= self.term_height as usize {
+        // Transition to Pinned ASAP — as soon as we have stream content
+        // or beacon grows beyond 1 line. Scroll regions don't blink.
+        // Nom-style overwrite blinks on terminals without sync update support.
+        if self.stream_lines_total > 0 || self.pinned_line_count > 1 {
             self.transition_to_pinned(new_height);
         }
     }
