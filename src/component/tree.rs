@@ -133,19 +133,18 @@ impl Render for Tree {
             let icon = theme.icons.for_status(item.status);
             let semantic = item.color_override.unwrap_or_else(|| semantic_for_status(item.status));
             let base_color = semantic.resolve(&theme.palette);
-            // Apply fade: lerp from RGB base toward muted.
-            // Always convert to RGB first — ANSI named colors produce
-            // ugly intermediates and a visible jump when fade starts.
-            let icon_color = if item.fade_factor > 0.0 {
-                base_color.to_rgb_color().lerp(&theme.palette.muted, item.fade_factor)
-            } else {
-                base_color.to_rgb_color()
-            };
+
+            // Fade uses the terminal's native dim attribute (\x1b[2m)
+            // instead of RGB lerp — this preserves the user's terminal
+            // color theme and avoids ugly color jumps.
+            let fade = item.fade_factor;
+            let dim_prefix = if fade > 0.2 { "\x1b[2m" } else { "" };
+            let icon_color = base_color;
             let msg_color = icon_color;
 
             let main = if let Some(ref meta) = item.metadata {
                 let prefix = format!(
-                    "\x1b[2m{connector}\x1b[0m {ic}{icon}\x1b[0m {mc}{msg}\x1b[0m",
+                    "{dim_prefix}\x1b[2m{connector}\x1b[0m {dim_prefix}{ic}{icon}\x1b[0m {dim_prefix}{mc}{msg}\x1b[0m",
                     ic = icon_color.fg_code(),
                     mc = msg_color.fg_code(),
                     msg = item.message,
@@ -156,10 +155,10 @@ impl Render for Tree {
                 } else {
                     " ".into()
                 };
-                format!("{prefix}{pad}\x1b[2m({meta})\x1b[0m")
+                format!("{prefix}{pad}{dim_prefix}\x1b[2m({meta})\x1b[0m")
             } else {
                 format!(
-                    "\x1b[2m{connector}\x1b[0m {ic}{icon}\x1b[0m {mc}{msg}\x1b[0m",
+                    "{dim_prefix}\x1b[2m{connector}\x1b[0m {dim_prefix}{ic}{icon}\x1b[0m {dim_prefix}{mc}{msg}\x1b[0m",
                     ic = icon_color.fg_code(),
                     mc = msg_color.fg_code(),
                     msg = item.message,
@@ -169,7 +168,7 @@ impl Render for Tree {
 
             if let Some(ref detail) = item.detail {
                 frame.push_line(format!(
-                    "\x1b[2m{continuation}\x1b[0m    \x1b[2m{detail}\x1b[0m"
+                    "{dim_prefix}\x1b[2m{continuation}\x1b[0m    {dim_prefix}\x1b[2m{detail}\x1b[0m"
                 ));
             }
         }

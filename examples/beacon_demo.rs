@@ -32,10 +32,10 @@ fn main() {
         return;
     }
 
-    // Fast TTL for demo — fade clearly visible
+    // Fast fade for demo
     let mut theme = theme;
-    theme.beacon.notification_ttl_ms = 2_500;
-    theme.beacon.notification_fade_start = 0.25;
+    theme.beacon.notification_ttl_ms = 2_000;
+    theme.beacon.notification_fade_start = 0.2;
 
     let mut painter = Painter::new(ctx.term_width, ctx.term_height);
     painter.hide_cursor();
