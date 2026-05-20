@@ -1,13 +1,16 @@
-//! Painter — nom-style terminal renderer with pinned region at bottom.
+//! Painter — nom-style terminal renderer.
 //!
-//! Each frame (single atomic write with sync update):
-//! 1. Move cursor to start of previous beacon (`\x1b[nF`)
-//! 2. Clear to end of screen (`\x1b[J`)
-//! 3. Print stream content (scrolls into history)
-//! 4. Print beacon (NO trailing newline on last line)
+//! Follows the exact algorithm from nix-output-monitor:
+//! 1. Begin synchronized update (\x1b[?2026h)
+//! 2. Go to column 0 (if previous output was 1 line)
+//! 3. Clear current line
+//! 4. Move up + clear, repeated for each previous line
+//! 5. Write all new content (stream lines + beacon lines)
+//! 6. End synchronized update (\x1b[?2026l)
+//! 7. Single write() syscall for the entire frame
 //!
-//! Cursor ends at the end of the last beacon line.
-//! Next frame moves up by `pinned_count - 1` lines.
+//! `printed_lines` only tracks the BEACON line count.
+//! Stream lines scroll into scrollback and are not tracked.
 
 use console::Term;
 use std::io::Write;
@@ -18,8 +21,8 @@ static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 pub struct Painter {
     term: Term,
-    /// Lines the beacon occupied last frame.
-    pinned_count: usize,
+    /// Number of BEACON lines printed last frame (not stream lines).
+    printed_lines: usize,
     /// Pending stream lines.
     stream_buffer: Vec<String>,
     cursor_hidden: bool,
@@ -30,7 +33,7 @@ impl Painter {
     pub fn new(term_width: u16) -> Self {
         Self {
             term: Term::stderr(),
-            pinned_count: 0,
+            printed_lines: 0,
             stream_buffer: Vec::new(),
             cursor_hidden: false,
             term_width,
@@ -45,76 +48,76 @@ impl Painter {
         self.stream_buffer.extend(lines);
     }
 
-    /// Render a frame (single atomic write).
-    /// Render a frame — overwrite then clear trailing (nom-style).
-    ///
-    /// Never blanks a line before writing. Content overwrites old content
-    /// in place, then `\x1b[K` clears only the trailing remainder.
-    /// No visible flash even without synchronized update support.
-    pub fn render_frame(&mut self, pinned_lines: &[String]) {
-        let old_count = self.pinned_count;
-        let new_count = pinned_lines.len();
+    /// Render a frame — nom algorithm, single write syscall.
+    pub fn render_frame(&mut self, beacon_lines: &[String]) {
+        let mut buf = Vec::<u8>::with_capacity(4096);
 
-        let mut buf = String::new();
-        buf.push_str(SYNC_BEGIN);
+        // ── Begin synchronized update ──
+        buf.extend_from_slice(SYNC_BEGIN.as_bytes());
 
-        // 1. Move cursor to start of previous beacon
-        if old_count > 1 {
-            buf.push_str(&format!("\x1b[{}F", old_count - 1));
-        } else if old_count == 1 {
-            buf.push('\r');
+        // ── Phase 1: Erase previous beacon (go up + clear) ──
+        // Same as nom: setCursorColumn 0, clearLine, then (cursorUpLine 1 + clearLine) × (n-1)
+        if self.printed_lines == 1 {
+            // Single line: just go to column 0 and clear
+            buf.extend_from_slice(b"\x1b[G");   // setCursorColumn 0
+            buf.extend_from_slice(b"\x1b[2K");  // clearLine
+        } else if self.printed_lines > 1 {
+            // Multiple lines: clear current, then move up + clear for each previous line
+            buf.extend_from_slice(b"\x1b[2K");  // clear current line
+            for _ in 0..(self.printed_lines - 1) {
+                buf.extend_from_slice(b"\x1b[F"); // cursorUpLine 1 (= cursor previous line)
+                buf.extend_from_slice(b"\x1b[2K"); // clearLine
+            }
         }
 
-        // 2. Stream lines: overwrite + clear trailing + newline.
-        //    The \n scrolls old beacon content up into scrollback.
+        // ── Phase 2: Write stream lines (become scrollback, not tracked) ──
         let drained: Vec<String> = self.stream_buffer.drain(..).collect();
         for line in &drained {
-            buf.push_str(line);
-            buf.push_str("\x1b[K\n"); // clear rest of line, then newline
+            buf.extend_from_slice(b"\n");        // PrintNewLine
+            buf.extend_from_slice(line.as_bytes());
         }
 
-        // 3. Overwrite beacon lines — write content, THEN clear trailing.
-        //    Old content is overwritten char-by-char, never blanked first.
-        for (i, line) in pinned_lines.iter().enumerate() {
-            buf.push('\r');          // go to column 0
-            buf.push_str(line);      // overwrite old content
-            buf.push_str("\x1b[K");  // clear anything remaining after
-            if i < new_count - 1 {
-                buf.push('\n');
+        // ── Phase 3: Write beacon lines ──
+        for (i, line) in beacon_lines.iter().enumerate() {
+            if i == 0 && self.printed_lines == 0 && drained.is_empty() {
+                // Very first frame, no previous output — just write
+            } else if i == 0 && !drained.is_empty() {
+                // Stream was just printed, beacon follows on next line
+                buf.extend_from_slice(b"\n");
+            } else if i == 0 {
+                // No stream, but previous beacon was erased — cursor is at first line
+                // StayInLine (already at the right position)
+            } else {
+                // Subsequent beacon lines
+                buf.extend_from_slice(b"\n");
             }
+            buf.extend_from_slice(line.as_bytes());
         }
 
-        // 4. If beacon shrank, clear leftover lines below
-        if new_count < old_count {
-            for _ in 0..(old_count - new_count) {
-                buf.push_str("\n\x1b[2K");
-            }
-            buf.push_str(&format!("\x1b[{}F", old_count - new_count));
-        }
+        // ── End synchronized update ──
+        buf.extend_from_slice(SYNC_END.as_bytes());
 
-        buf.push_str(SYNC_END);
-
-        let _ = self.term.write_all(buf.as_bytes());
+        // ── Single write syscall ──
+        let _ = self.term.write_all(&buf);
         let _ = self.term.flush();
 
-        self.pinned_count = new_count;
+        self.printed_lines = beacon_lines.len();
     }
 
     /// Clear beacon and print final static content.
     pub fn print_final(&mut self, lines: &[String]) {
-        // Erase beacon
-        if self.pinned_count > 1 {
-            let mut buf = String::new();
-            buf.push_str(&format!("\x1b[{}F", self.pinned_count - 1));
-            buf.push_str("\x1b[J");
-            let _ = self.term.write_all(buf.as_bytes());
+        // Erase current beacon
+        if self.printed_lines > 0 {
+            let mut buf = Vec::<u8>::new();
+            buf.extend_from_slice(b"\x1b[2K");
+            for _ in 0..self.printed_lines.saturating_sub(1) {
+                buf.extend_from_slice(b"\x1b[F\x1b[2K");
+            }
+            let _ = self.term.write_all(&buf);
             let _ = self.term.flush();
-        } else if self.pinned_count == 1 {
-            let _ = self.term.write_all(b"\r\x1b[J");
-            let _ = self.term.flush();
+            self.printed_lines = 0;
         }
-        self.pinned_count = 0;
-
+        // Print final content as normal scrollback
         for line in lines {
             let _ = self.term.write_line(line);
         }
