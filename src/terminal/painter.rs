@@ -50,22 +50,24 @@ impl Painter {
 
     /// Render a frame — nom algorithm, single write syscall.
     pub fn render_frame(&mut self, beacon_lines: &[String]) {
+        let new_count = beacon_lines.len();
+        // Clear the max of old and new height — ensures no leftover content
+        // when beacon grows (new lines would overwrite old stream text).
+        let clear_count = self.printed_lines.max(new_count);
+
         let mut buf = Vec::<u8>::with_capacity(4096);
 
         // ── Begin synchronized update ──
         buf.extend_from_slice(SYNC_BEGIN.as_bytes());
 
-        // ── Phase 1: Erase previous beacon (go up + clear) ──
-        // Same as nom: setCursorColumn 0, clearLine, then (cursorUpLine 1 + clearLine) × (n-1)
-        if self.printed_lines == 1 {
-            // Single line: just go to column 0 and clear
+        // ── Phase 1: Erase lines (go up + clear) ──
+        if clear_count == 1 {
             buf.extend_from_slice(b"\x1b[G");   // setCursorColumn 0
             buf.extend_from_slice(b"\x1b[2K");  // clearLine
-        } else if self.printed_lines > 1 {
-            // Multiple lines: clear current, then move up + clear for each previous line
+        } else if clear_count > 1 {
             buf.extend_from_slice(b"\x1b[2K");  // clear current line
-            for _ in 0..(self.printed_lines - 1) {
-                buf.extend_from_slice(b"\x1b[F"); // cursorUpLine 1 (= cursor previous line)
+            for _ in 0..(clear_count - 1) {
+                buf.extend_from_slice(b"\x1b[F"); // cursor previous line
                 buf.extend_from_slice(b"\x1b[2K"); // clearLine
             }
         }
@@ -86,6 +88,7 @@ impl Painter {
                 buf.extend_from_slice(b"\n");
             }
             buf.extend_from_slice(line.as_bytes());
+            buf.extend_from_slice(b"\x1b[K"); // clear trailing garbage
             need_newline = true;
         }
 
@@ -94,6 +97,7 @@ impl Painter {
                 buf.extend_from_slice(b"\n");
             }
             buf.extend_from_slice(line.as_bytes());
+            buf.extend_from_slice(b"\x1b[K"); // clear trailing garbage
             need_newline = true;
         }
 
