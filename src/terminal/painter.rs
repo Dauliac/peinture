@@ -97,13 +97,22 @@ impl Painter {
 
     /// Phase 1: beacon follows content, no scroll region.
     fn render_filling(&mut self, pinned_lines: &[String], new_height: u16) {
-        // Flush overflow from buffer
-        let overflow = self.buffer.len().saturating_sub(self.reserve);
-        let to_flush = overflow.min(self.buffer.len());
-        let tw = self.term_width;
-        let flushed: Vec<String> = self.buffer.drain(..to_flush)
-            .map(|l| truncate_line(&l, tw))
-            .collect();
+        let beacon_growing = pinned_lines.len() > self.pinned_line_count;
+
+        // When beacon grows: DON'T flush stream this frame.
+        // Stream lines overwrite the first beacon line (notification),
+        // causing a visible flash. Let the beacon grow cleanly first,
+        // stream flushes on the next frame.
+        let flushed: Vec<String> = if beacon_growing {
+            Vec::new()
+        } else {
+            let overflow = self.buffer.len().saturating_sub(self.reserve);
+            let to_flush = overflow.min(self.buffer.len());
+            let tw = self.term_width;
+            self.buffer.drain(..to_flush)
+                .map(|l| truncate_line(&l, tw))
+                .collect()
+        };
 
         let mut buf = Vec::<u8>::with_capacity(4096);
         buf.extend_from_slice(SYNC_BEGIN.as_bytes());
@@ -113,26 +122,6 @@ impl Painter {
             buf.extend_from_slice(format!("\x1b[{}F", self.pinned_line_count - 1).as_bytes());
         } else if self.pinned_line_count == 1 {
             buf.extend_from_slice(b"\r");
-        }
-
-        // If beacon grew: we need extra rows below the old beacon.
-        // Clear them first so the new notification lines don't flash
-        // over old content for one frame.
-        let new_h = pinned_lines.len();
-        if new_h > self.pinned_line_count && self.pinned_line_count > 0 {
-            // Save position, go down past old beacon, clear extra rows, restore
-            let extra = new_h - self.pinned_line_count;
-            // Move to end of old beacon
-            if self.pinned_line_count > 1 {
-                buf.extend_from_slice(format!("\x1b[{}E", self.pinned_line_count - 1).as_bytes());
-            }
-            // Clear the extra rows below
-            for _ in 0..extra {
-                buf.extend_from_slice(b"\n\x1b[2K");
-            }
-            // Move back to start of old beacon
-            let total_down = (self.pinned_line_count - 1) + extra;
-            buf.extend_from_slice(format!("\x1b[{}F", total_down).as_bytes());
         }
 
         // Write stream lines (push beacon down)
