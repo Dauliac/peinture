@@ -18,7 +18,8 @@ fn main() {
     }
 
     let theme = Theme::default();
-    let mut painter = Painter::new(ctx.term_width, ctx.term_height);
+    let min_batch = theme.beacon.max_items + 1;
+    let mut painter = Painter::new(ctx.term_width, ctx.term_height, min_batch);
     painter.hide_cursor();
     let start = Instant::now();
 
